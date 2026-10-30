@@ -1,0 +1,295 @@
+{
+  "environment": {
+    "timestamp": "2026-10-30T17:29:48+00:00",
+    "duckdb_version": "2.0.0",
+    "duckdb_source_id": "d54cbbe3df",
+    "fts_extension_version": "223b8cb9e6",
+    "fts_install_mode": "REPOSITORY",
+    "python": "3.13.17",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39",
+    "cpu_count": 4,
+    "memory_gb": 15.7,
+    "storage_compatibility_version": "latest"
+  },
+  "config": {
+    "rows": 1000000,
+    "append": 100000,
+    "append_batch": 1000,
+    "single_inserts": 100,
+    "delete": 10000,
+    "workers": "1,4,8",
+    "threads": 4,
+    "duration": 20.0,
+    "queries": 30,
+    "warmup": 10,
+    "top_k": 10,
+    "vocab": 100000,
+    "min_words": 20,
+    "max_words": 120,
+    "seed": 42,
+    "load_batch": 1000000,
+    "db": "/tmp/claude-0/-home-user-invergo/1cc4fa7d-7228-5f28-8dd6-093057a6d8f2/scratchpad/b1m.duckdb",
+    "out": "results/duckdb-2.0.0_static_1m.json",
+    "memory_limit": null,
+    "incremental": "off",
+    "cluster_terms": false,
+    "conjunctive": false,
+    "fts_extension": null,
+    "allow_unsigned": false,
+    "worker_counts": [
+      1,
+      4,
+      8
+    ]
+  },
+  "phases": {
+    "load": {
+      "rows": 1000000,
+      "seconds": 17.5,
+      "rows_per_s": 57127.1,
+      "tokens": 70003953,
+      "text_mb": 529.9,
+      "storage": {
+        "db_file_mb": 324.0,
+        "wal_mb": 0.0
+      },
+      "memory": {
+        "peak_rss_mb": 662.5,
+        "rss_mb": 564.7,
+        "duckdb_buffer_mb": 324.0
+      }
+    },
+    "index": {
+      "mode": "static",
+      "cluster_terms": false,
+      "seconds": 32.39,
+      "docs_per_s": 30873.6,
+      "incremental_fallback_reason": null,
+      "storage": {
+        "db_file_mb": 484.8,
+        "wal_mb": 0.0
+      },
+      "memory": {
+        "peak_rss_mb": 3456.1,
+        "rss_mb": 2830.5,
+        "duckdb_buffer_mb": 484.8
+      },
+      "index_overhead_mb": 160.8
+    },
+    "latency": {
+      "head": {
+        "count": 30,
+        "mean_ms": 368.462,
+        "p50_ms": 332.747,
+        "p95_ms": 571.854,
+        "p99_ms": 659.465,
+        "max_ms": 689.035,
+        "mean_hits": 10.0,
+        "mean_df": 183543.63333333333
+      },
+      "mid": {
+        "count": 30,
+        "mean_ms": 253.339,
+        "p50_ms": 256.204,
+        "p95_ms": 310.396,
+        "p99_ms": 334.981,
+        "max_ms": 338.505,
+        "mean_hits": 10.0,
+        "mean_df": 2301.0333333333333
+      },
+      "tail": {
+        "count": 30,
+        "mean_ms": 248.879,
+        "p50_ms": 244.245,
+        "p95_ms": 302.361,
+        "p99_ms": 331.912,
+        "max_ms": 343.538,
+        "mean_hits": 10.0,
+        "mean_df": 150.56666666666666
+      },
+      "multi3": {
+        "count": 30,
+        "mean_ms": 764.931,
+        "p50_ms": 760.103,
+        "p95_ms": 1279.651,
+        "p99_ms": 1473.781,
+        "max_ms": 1516.784,
+        "mean_hits": 10.0
+      },
+      "memory": {
+        "peak_rss_mb": 3456.1,
+        "rss_mb": 952.1,
+        "duckdb_buffer_mb": 484.8
+      }
+    },
+    "concurrency": [
+      {
+        "workers": 1,
+        "elapsed_s": 20.44,
+        "queries": 54,
+        "qps": 2.64,
+        "count": 54,
+        "mean_ms": 378.394,
+        "p50_ms": 277.765,
+        "p95_ms": 961.789,
+        "p99_ms": 1429.694,
+        "max_ms": 1584.787,
+        "errors": [],
+        "memory": {
+          "peak_rss_mb": 3456.1,
+          "rss_mb": 1030.7,
+          "duckdb_buffer_mb": 484.8
+        }
+      },
+      {
+        "workers": 4,
+        "elapsed_s": 20.8,
+        "queries": 64,
+        "qps": 3.08,
+        "count": 64,
+        "mean_ms": 1287.902,
+        "p50_ms": 1136.011,
+        "p95_ms": 2581.47,
+        "p99_ms": 3093.592,
+        "max_ms": 3437.855,
+        "errors": [],
+        "memory": {
+          "peak_rss_mb": 3456.1,
+          "rss_mb": 1513.1,
+          "duckdb_buffer_mb": 484.8
+        }
+      },
+      {
+        "workers": 8,
+        "elapsed_s": 21.92,
+        "queries": 50,
+        "qps": 2.28,
+        "count": 50,
+        "mean_ms": 3401.989,
+        "p50_ms": 2683.826,
+        "p95_ms": 7642.271,
+        "p99_ms": 9168.974,
+        "max_ms": 9411.144,
+        "errors": [],
+        "memory": {
+          "peak_rss_mb": 3456.1,
+          "rss_mb": 1723.2,
+          "duckdb_buffer_mb": 484.8
+        }
+      }
+    ],
+    "updates": {
+      "index_mode": "static",
+      "append_rows": 100000,
+      "append_batch": 1000,
+      "batched_insert": {
+        "indexed_table_s": 3.252,
+        "indexed_rows_per_s": 30748.4,
+        "no_index_baseline_s": 2.185,
+        "no_index_rows_per_s": 45773.8,
+        "slowdown_vs_no_index_x": 1.49
+      },
+      "single_row_insert": {
+        "indexed_table": {
+          "count": 100,
+          "mean_ms": 4.742,
+          "p50_ms": 4.767,
+          "p95_ms": 6.414,
+          "p99_ms": 6.569,
+          "max_ms": 6.909
+        },
+        "no_index_baseline": {
+          "count": 100,
+          "mean_ms": 4.727,
+          "p50_ms": 4.63,
+          "p95_ms": 6.818,
+          "p99_ms": 7.181,
+          "max_ms": 13.009
+        }
+      },
+      "after_insert": {
+        "expected_visible": 100100,
+        "visible": 0,
+        "index_up_to_date": false
+      },
+      "delete": {
+        "rows": 10000,
+        "indexed_table_s": 0.006,
+        "no_index_baseline_s": 0.004,
+        "expected_visible": 90100,
+        "visible": 0
+      },
+      "bm25_stats": {
+        "table_rows": 1090100,
+        "index_num_docs": 1000000,
+        "stats_current": false
+      },
+      "latency_after_updates": {
+        "head": {
+          "count": 30,
+          "mean_ms": 396.859,
+          "p50_ms": 355.506,
+          "p95_ms": 628.889,
+          "p99_ms": 732.296,
+          "max_ms": 743.06,
+          "mean_hits": 10.0
+        },
+        "mid": {
+          "count": 30,
+          "mean_ms": 252.213,
+          "p50_ms": 250.627,
+          "p95_ms": 313.858,
+          "p99_ms": 340.693,
+          "max_ms": 343.506,
+          "mean_hits": 10.0
+        },
+        "tail": {
+          "count": 30,
+          "mean_ms": 260.222,
+          "p50_ms": 253.049,
+          "p95_ms": 314.8,
+          "p99_ms": 355.267,
+          "max_ms": 371.453,
+          "mean_hits": 10.0
+        },
+        "multi3": {
+          "count": 30,
+          "mean_ms": 792.335,
+          "p50_ms": 705.096,
+          "p95_ms": 1431.479,
+          "p99_ms": 1677.999,
+          "max_ms": 1753.852,
+          "mean_hits": 10.0
+        }
+      },
+      "storage_after_updates": {
+        "db_file_mb": 606.5,
+        "wal_mb": 0.0
+      },
+      "full_rebuild": {
+        "seconds": 45.03,
+        "visible_after_rebuild": 90100,
+        "storage": {
+          "db_file_mb": 693.8,
+          "wal_mb": 0.0
+        }
+      },
+      "memory": {
+        "peak_rss_mb": 3974.3,
+        "rss_mb": 2610.5,
+        "duckdb_buffer_mb": 533.2
+      }
+    }
+  },
+  "final": {
+    "storage": {
+      "db_file_mb": 693.8,
+      "wal_mb": 0.0
+    },
+    "memory": {
+      "peak_rss_mb": 3974.3,
+      "rss_mb": 2610.5,
+      "duckdb_buffer_mb": 533.2
+    }
+  }
+}
