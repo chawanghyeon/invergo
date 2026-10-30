@@ -1,0 +1,2 @@
+# The fts extension is downloaded from extensions.duckdb.org on first LOAD/INSTALL.
+duckdb==2.0.0
