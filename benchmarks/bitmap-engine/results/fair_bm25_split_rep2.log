@@ -1,0 +1,14 @@
+== es (http://127.0.0.1:9200) BM25 verdict, held-out sets
+[uniform held-out]
+  BM25 + stock             single p50   3.483 p99  14.540 ms | 16 clients    895 QPS p50 16.24 p99 47.33 ms (client core 21%, server 97% of 3 cores)
+  BM25 + category + stock  single p50   3.082 p99  13.829 ms | 16 clients   1311 QPS p50 11.18 p99 31.74 ms (client core 29%, server 98% of 3 cores)
+[long-tail held-out]
+  BM25 + stock             single p50   3.142 p99  15.504 ms | 16 clients   1103 QPS p50 13.11 p99 39.44 ms (client core 23%, server 98% of 3 cores)
+  BM25 + category + stock  single p50   2.819 p99   8.811 ms | 16 clients   1481 QPS p50 9.88 p99 27.52 ms (client core 29%, server 98% of 3 cores)
+== ours (http://127.0.0.1:9400) BM25 verdict, held-out sets
+[uniform held-out]
+  BM25 + stock             single p50   2.145 p99  10.855 ms | 16 clients   1347 QPS p50 10.91 p99 29.39 ms (client core 19%, server 98% of 3 cores)
+  BM25 + category + stock  single p50   1.744 p99  10.869 ms | 16 clients   1606 QPS p50 9.18 p99 23.55 ms (client core 23%, server 98% of 3 cores)
+[long-tail held-out]
+  BM25 + stock             single p50   2.016 p99  12.288 ms | 16 clients   1632 QPS p50 9.06 p99 23.20 ms (client core 23%, server 98% of 3 cores)
+  BM25 + category + stock  single p50   1.722 p99  10.174 ms | 16 clients   1730 QPS p50 8.52 p99 21.98 ms (client core 25%, server 98% of 3 cores)

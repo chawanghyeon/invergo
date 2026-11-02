@@ -1,0 +1,12 @@
+[popular-weighted (the set used for tuning)]
+  filters top-10 identical: ES 300/300, Vespa 0/300
+  BM25(+filters): ES identical scores 100/100, identical docs above 10th score 100/100; Vespa weakAnd top-10 overlap 0.0%
+  facets (exact counts): ours fast path == exact 100/100; ES (1 shard) == exact 100/100; Vespa precision grouping == exact 0/100
+[uniform held-out]
+  filters top-10 identical: ES 300/300, Vespa 0/300
+  BM25(+filters): ES identical scores 200/200, identical docs above 10th score 200/200; Vespa weakAnd top-10 overlap 0.0%
+  facets (exact counts): ours fast path == exact 100/100; ES (1 shard) == exact 100/100; Vespa precision grouping == exact 0/100
+[long-tail held-out]
+  filters top-10 identical: ES 300/300, Vespa 0/300
+  BM25(+filters): ES identical scores 200/200, identical docs above 10th score 200/200; Vespa weakAnd top-10 overlap 0.0%
+  facets (exact counts): ours fast path == exact 100/100; ES (1 shard) == exact 100/100; Vespa precision grouping == exact 0/100

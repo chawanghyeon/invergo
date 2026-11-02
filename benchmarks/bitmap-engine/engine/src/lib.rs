@@ -598,6 +598,9 @@ impl<'a> Cur<'a> {
     pub fn cur(&self) -> Option<u32> {
         self.heads.iter().flatten().min().copied()
     }
+    pub fn len(&self) -> u64 {
+        self.size
+    }
     pub fn seek(&mut self, t: u32) {
         for (it, h) in self.its.iter_mut().zip(self.heads.iter_mut()) {
             if let Some(v) = *h {

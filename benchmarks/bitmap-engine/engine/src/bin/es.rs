@@ -1151,6 +1151,81 @@ fn faircheck(path: &str) {
     }
 }
 
+/// BM25 verdict: held-out sets only, "BM25 + stock" and "BM25 + category + stock" measured separately.
+fn fair_bm25(sys_name: &str, path: &str) {
+    let sys = match sys_name { "es" => Sys::Es, "ours" => Sys::Ours, _ => panic!("es|ours") };
+    let rc = realcat::load(path);
+    let a = agent();
+    println!("== {sys_name} ({}) BM25 verdict, held-out sets", sys.base());
+    let fresh = std::env::var("FRESH").is_ok();
+    for (name, tail) in [("uniform held-out", false), ("long-tail held-out", true)] {
+        // FRESH: never-seen seeds (600/700), 500 queries per kind, declared before measuring
+        let h = if fresh { realcat::heldout_base(&rc, 500, tail, if tail { 700 } else { 600 }) } else { realcat::heldout(&rc, 300, tail) };
+        if fresh && sys == Sys::Ours {
+            // results must match ES (1 shard, fresh load) before speed is compared
+            let es_a = agent();
+            let (mut same, mut n) = (0, 0);
+            let pairs: Vec<(Vec<u32>, Vec<Clause>)> = h.bm25.iter().map(|b| (b.clone(), vec![Clause::Stock]))
+                .chain(h.bm25_cat.iter().map(|(b, c)| (b.clone(), vec![Clause::Cat(*c), Clause::Stock]))).collect();
+            for p in &pairs {
+                let me = s_scores(Sys::Ours, &s_search(&a, Sys::Ours, &body_bm25(Sys::Ours, &rc, p)));
+                let es = s_scores(Sys::Es, &s_search(&es_a, Sys::Es, &body_bm25(Sys::Es, &rc, p)));
+                n += 1;
+                same += (es.len() == me.len() && es.iter().zip(&me).all(|(x, y)| (x.0 - y.0).abs() <= 1e-5 * x.0.abs().max(1.0))) as u32;
+            }
+            println!("[{name}] fresh set: BM25 top-10 scores identical to ES on {same}/{n}");
+        }
+        let kinds: Vec<(&str, Vec<Value>)> = vec![
+            ("BM25 + stock", h.bm25.iter().map(|b| body_bm25(sys, &rc, &(b.clone(), vec![Clause::Stock]))).collect()),
+            ("BM25 + category + stock", h.bm25_cat.iter().map(|(b, c)| body_bm25(sys, &rc, &(b.clone(), vec![Clause::Cat(*c), Clause::Stock]))).collect()),
+        ];
+        for (_, bodies) in &kinds {
+            for _ in 0..2 {
+                for b in bodies {
+                    s_search(&a, sys, b); // warm-up: two passes
+                }
+            }
+        }
+        println!("[{name}]");
+        for (kind, bodies) in &kinds {
+            let lat: Vec<f64> = bodies.iter().map(|b| { let t = Instant::now(); s_search(&a, sys, b); t.elapsed().as_secs_f64() * 1e3 }).collect();
+            let (p50, p99, _) = stats(lat);
+            let stop = AtomicBool::new(false);
+            let done = AtomicU64::new(0);
+            let (c0, t0, srv0) = (cpu_secs(), Instant::now(), spid_cpu());
+            let lats = std::thread::scope(|s| {
+                let hs: Vec<_> = (0..16).map(|t| {
+                    let (stop, done) = (&stop, &done);
+                    s.spawn(move || {
+                        let a = agent();
+                        let mut l = Vec::new();
+                        let mut j = t * 97;
+                        while !stop.load(Relaxed) {
+                            let t1 = Instant::now();
+                            s_search(&a, sys, &bodies[j % bodies.len()]);
+                            l.push(t1.elapsed().as_secs_f64() * 1e3);
+                            done.fetch_add(1, Relaxed);
+                            j += 1;
+                        }
+                        l
+                    })
+                }).collect();
+                std::thread::sleep(Duration::from_secs(15));
+                stop.store(true, Relaxed);
+                hs.into_iter().flat_map(|h| h.join().unwrap()).collect::<Vec<f64>>()
+            });
+            let wall = t0.elapsed().as_secs_f64();
+            let (q50, q99, _) = stats(lats);
+            print!("  {kind:<24} single p50 {p50:7.3} p99 {p99:7.3} ms | 16 clients {:6.0} QPS p50 {q50:.2} p99 {q99:.2} ms (client core {:.0}%",
+                   done.load(Relaxed) as f64 / wall, 100.0 * (cpu_secs() - c0) / wall);
+            match (spid_cpu(), srv0) {
+                (Some(s1), Some(s0)) => println!(", server {:.0}% of 3 cores)", 100.0 * (s1 - s0) / wall / 3.0),
+                _ => println!(")"),
+            }
+        }
+    }
+}
+
 fn fair(sys_name: &str, path: &str, filters_only: bool) {
     let sys = match sys_name { "es" => Sys::Es, "ours" => Sys::Ours, "vespa" => Sys::Vespa, _ => panic!() };
     let rc = realcat::load(path);
@@ -1396,6 +1471,7 @@ fn main() {
         Some("prodcheck") => prodcheck(&arg),
         Some("vespafeed") => vespafeed(&arg, &args[3]),
         Some("faircheck") => faircheck(&arg),
+        Some("fairbm25") => fair_bm25(&arg, &args[3]),
         Some("fair") => fair(&arg, &args[3], args.get(4).map(|x| x == "filters").unwrap_or(false)),
         Some("oos") => oos(&arg, &args[3]),
         Some("vreset") => vreset(&arg),

@@ -44,6 +44,10 @@ fn main() {
         serve_real(&ri);
         return;
     }
+    if mode == "bm25dev" {
+        bm25dev(&rc, &ri);
+        return;
+    }
     let q = queries(&rc, 1000);
     let ix = &ri.ix;
 
@@ -150,4 +154,42 @@ fn serve_real(ri: &bitmap_engine::realcat::RealIndex) {
             });
         }
     });
+}
+
+/// Development check for filtered BM25 (dev seeds only): exactness vs exhaustive, in-process latency.
+fn bm25dev(rc: &bitmap_engine::realcat::RealCat, ri: &bitmap_engine::realcat::RealIndex) {
+    let mut qs: Vec<(Vec<u32>, Vec<Clause>, &str)> = Vec::new();
+    for tail in [false, true] {
+        let h = bitmap_engine::realcat::dev(rc, 250, tail);
+        qs.extend(h.bm25.iter().map(|b| (b.clone(), vec![Clause::Stock], "stock")));
+        qs.extend(h.bm25_cat.iter().map(|(b, c)| (b.clone(), vec![Clause::Cat(*c), Clause::Stock], "cat+stock")));
+    }
+    let mut ok = 0;
+    for (b, f, _) in &qs {
+        let (x, y) = (ri.bm25_filtered(b, f, K), ri.bm25_exhaustive_f(b, f, K));
+        let same = x.len() == y.len() && x.iter().zip(&y).all(|(a, b)| a.1 == b.1 && (a.0 - b.0).abs() <= 1e-5 * a.0.abs().max(1.0));
+        ok += same as u32;
+    }
+    println!("filtered BM25 == exhaustive (ids and scores) on {ok}/{}", qs.len());
+    for kind in ["stock", "cat+stock"] {
+        let sel: Vec<&(Vec<u32>, Vec<Clause>, &str)> = qs.iter().filter(|q| q.2 == kind).collect();
+        println!("  {kind:<10} single thread {}", time(&sel, |q| ri.bm25_filtered(&q.0, &q.1, K)));
+    }
+    // slowest dev queries per kind, with term df and filter sizes
+    for kind in ["stock", "cat+stock"] {
+        let mut v: Vec<(f64, usize)> = qs.iter().enumerate().filter(|(_, q)| q.2 == kind).map(|(i, q)| {
+            let t = Instant::now(); std::hint::black_box(ri.bm25_filtered(&q.0, &q.1, K)); (t.elapsed().as_secs_f64() * 1e3, i) }).collect();
+        v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        for (ms, i) in v.iter().take(4) {
+            let (b, f, _) = &qs[*i];
+            let fsz: Vec<u64> = f.iter().map(|c| ri.ix.shards.iter().map(|sh| clause_src(&sh.read(), c).iter().map(|s| s.len()).sum::<u64>()).sum()).collect();
+            let top = ri.bm25_filtered(b, f, K);
+            println!("  slow {kind} {ms:.1} ms: words {:?} df {:?} filter sizes {fsz:?} hits {} 10th {:.2}",
+                     b.iter().map(|w| rc.vocab[*w as usize].as_str()).collect::<Vec<_>>(), b.iter().map(|w| ri.df[*w as usize]).collect::<Vec<_>>(),
+                     top.len(), top.last().map(|x| x.0).unwrap_or(0.0));
+        }
+    }
+    let t = Instant::now();
+    (0..4 * qs.len()).into_par_iter().for_each(|i| { std::hint::black_box(ri.bm25_filtered(&qs[i % qs.len()].0, &qs[i % qs.len()].1, K)); });
+    println!("  throughput 4 threads (in-process): {:.0} QPS", (4 * qs.len()) as f64 / t.elapsed().as_secs_f64());
 }

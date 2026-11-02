@@ -359,14 +359,9 @@ impl RealIndex {
         let mut theta = f32::NEG_INFINITY;
         for &si in shard_ids {
             let sh = self.ix.shards[si].read();
-            // filter clauses as bitmaps (borrowed when a clause is a single bitmap)
-            let fb: Vec<std::borrow::Cow<RoaringBitmap>> = filters
-                .iter()
-                .map(|c| match clause_src(&sh, c)[..] {
-                    [Src::Bm(b)] => std::borrow::Cow::Borrowed(b),
-                    ref v => std::borrow::Cow::Owned(v.iter().fold(RoaringBitmap::new(), |mut a, s| { a |= s.to_bitmap(); a })),
-                })
-                .collect();
+            // filter clauses as leapfrog cursors, most selective first
+            let mut fcur: Vec<Cur> = filters.iter().map(|c| Cur::new(clause_src(&sh, c))).collect();
+            fcur.sort_by_key(|c| c.len());
             let mut its: Vec<It> = tw.iter().map(|x| sh.term.src(x.2).iter()).collect();
             let mut heads: Vec<Option<u32>> = its.iter_mut().map(|i| i.next()).collect();
             // tf >= 2 entries per term, walked monotonically
@@ -383,6 +378,11 @@ impl RealIndex {
                     }
                 }
             };
+            // per-window term bounds: block-max rows are cached per window; terms without a row
+            // are re-evaluated per candidate (their bound depends on whether a posting is in the window)
+            let mut wub = vec![0f32; m];
+            let mut wpre = vec![0f32; m + 1];
+            let mut cached_win = u32::MAX;
             loop {
                 let mut e = 0;
                 while e < m && prefix[e + 1] <= theta {
@@ -395,11 +395,49 @@ impl RealIndex {
                     Some(&d) => d,
                     None => break,
                 };
+                // filters: jump to the first doc >= d that passes every filter; if that is past d,
+                // move the essential lists there and pick a new candidate
+                if !fcur.is_empty() {
+                    let mut t = d;
+                    let mut exhausted = false;
+                    'f: loop {
+                        for c in fcur.iter_mut() {
+                            c.seek(t);
+                            match c.cur() {
+                                None => {
+                                    exhausted = true;
+                                    break 'f;
+                                }
+                                Some(v) if v > t => {
+                                    t = v;
+                                    continue 'f;
+                                }
+                                _ => {}
+                            }
+                        }
+                        break;
+                    }
+                    if exhausted {
+                        break;
+                    }
+                    if t > d {
+                        for i in e..m {
+                            if let Some(h) = heads[i] {
+                                if h < t {
+                                    its[i].advance_to(t);
+                                    heads[i] = its[i].next();
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                }
                 let win = d / bm_w();
                 let (ws, we) = (win * bm_w(), (win + 1) * bm_w());
                 // per-term bound in this window: block-max row if present, else the global bound
                 // if the term has a posting inside the window, else 0
-                let mut wub = vec![0f32; m];
+                let new_win = win != cached_win;
+                cached_win = win;
                 for i in 0..m {
                     if let Some(h) = heads[i] {
                         if h < ws {
@@ -407,16 +445,19 @@ impl RealIndex {
                             heads[i] = its[i].next();
                         }
                     }
-                    wub[i] = match rows[i] {
-                        Some(r) => {
+                    match rows[i] {
+                        Some(r) if new_win => {
                             let q = self.bm[r][win as usize];
-                            if q == 0 { 0.0 } else { let x = q as f32 / 255.0 * self.tni_max; tw[i].1 - tw[i].1 / (1f32 + x) }
+                            wub[i] = if q == 0 { 0.0 } else { let x = q as f32 / 255.0 * self.tni_max; tw[i].1 - tw[i].1 / (1f32 + x) };
                         }
-                        None => match heads[i] {
-                            Some(h) if h < we => tw[i].0,
-                            _ => 0.0,
-                        },
-                    };
+                        Some(_) => {}
+                        None => {
+                            wub[i] = match heads[i] {
+                                Some(h) if h < we => tw[i].0,
+                                _ => 0.0,
+                            }
+                        }
+                    }
                 }
                 if theta > f32::NEG_INFINITY && wub.iter().sum::<f32>() <= theta {
                     for i in e..m {
@@ -436,10 +477,7 @@ impl RealIndex {
                         heads[i] = its[i].next();
                     }
                 }
-                if !fb.iter().all(|b| b.contains(d)) {
-                    continue;
-                }
-                let mut wpre = vec![0f32; e + 1];
+                wpre[0] = 0.0;
                 for j in 0..e {
                     wpre[j + 1] = wpre[j] + wub[j];
                 }
@@ -635,8 +673,14 @@ pub struct HeldOut {
     pub bm25_cat: Vec<(Vec<u32>, u32)>, // words, category
 }
 pub fn heldout(rc: &RealCat, nq: u64, tail: bool) -> HeldOut {
+    heldout_base(rc, nq, tail, if tail { 300 } else { 200 })
+}
+/// Development set for tuning: same shapes, seeds disjoint from the reporting sets (200/300).
+pub fn dev(rc: &RealCat, nq: u64, tail: bool) -> HeldOut {
+    heldout_base(rc, nq, tail, if tail { 500 } else { 400 })
+}
+pub fn heldout_base(rc: &RealCat, nq: u64, tail: bool, base: u64) -> HeldOut {
     let n = rc.n as u64;
-    let base = if tail { 300 } else { 200 };
     let pick = |i: u64, f: u64| -> usize {
         let u = qu(i, base + f);
         let mut d = if tail { (n / 2 + (u * (n / 2) as f64) as u64) as usize } else { (u * n as f64) as usize };
