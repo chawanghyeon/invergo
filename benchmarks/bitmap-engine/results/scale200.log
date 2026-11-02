@@ -1,0 +1,19 @@
+N=200000000 shards=16 build 191.8s | bitmaps 5265 MB (terms 4348) + columns 1717 MB | peak RSS after build 11444 MB
+correctness: top-k by popularity and by price identical to full-AND baseline
+top-k by popularity (single thread, 1000 queries each)
+  cat & stock & rocket         baseline - | optimized p50    0.004 p99    0.015 max    0.068 ms
+  cat & stock & price range    baseline - | optimized p50    0.046 p99    0.538 max    1.411 ms
+  t1 & t2 & stock              baseline - | optimized p50    0.068 p99    0.983 max    1.229 ms
+  t1 & stock                   baseline - | optimized p50    0.002 p99    0.005 max    0.051 ms
+t1 & stock result sizes: p50 358984, p99 90760696, max 90760696
+top-10 by price on t1 & stock (shards in parallel)
+  full AND + select           p50    4.760 p99  255.700 max  336.404 ms
+  cheapest-bucket walk        p50    0.977 p99    2.872 max    8.198 ms
+brand facet top-20 on t1 & stock
+  exact (shards in parallel)  p50    6.630 p99  174.761 max  206.089 ms
+  sampled first  10000       p50    0.683 p99    2.104 max    2.642 ms | top-10 overlap 97%, top-20 overlap 94% (over 809 queries larger than sample)
+  sampled first 100000       p50    5.310 p99   11.833 max   38.025 ms | top-10 overlap 100%, top-20 overlap 99% (over 624 queries larger than sample)
+throughput top-k mix (4 threads): 74221 QPS
+updates (single thread, one lock per update): stock toggle 9562165/s | price change 426880/s
+updates (single thread, batches of 1024, 50/50 stock/price): 742761/s
+peak RSS 11444 MB

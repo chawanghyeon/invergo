@@ -1,0 +1,41 @@
+##### concurrent 10M
+N=10000000 shards=16 build 5.4s | bitmaps 463 MB (terms 416) + columns 86 MB | peak RSS after build 768 MB
+concurrent: 3 reader threads (top-k mix) + 1 writer thread, 10 s per level
+  batch    1 target        0/s: achieved          0 writes/s | reads   108872 QPS, p50 0.005 p99 0.234 max 10.133 ms
+  batch    1 target   100000/s: achieved     100001 writes/s | reads    59384 QPS, p50 0.013 p99 0.392 max 10.260 ms
+  batch    1 target      max/s: achieved     109261 writes/s | reads    50466 QPS, p50 0.019 p99 0.438 max 16.025 ms
+  batch 1024 target   100000/s: achieved     100045 writes/s | reads    76468 QPS, p50 0.007 p99 0.391 max 6.904 ms
+  batch 1024 target  1000000/s: achieved     650752 writes/s | reads    44377 QPS, p50 0.008 p99 0.819 max 14.224 ms
+  batch 1024 target      max/s: achieved     636211 writes/s | reads    40538 QPS, p50 0.009 p99 0.902 max 12.665 ms
+peak RSS 779 MB
+##### bench 100M
+shard 15: VmHWM: 6591264, VmRSS: 6005596
+N=100000000 shards=16 build 93.2s | bitmaps 3423 MB (terms 2964) + columns 858 MB | peak RSS after build 6437 MB
+correctness: top-k by popularity and by price identical to full-AND baseline
+top-k by popularity (single thread, 1000 queries each)
+  cat & stock & rocket         baseline - | optimized p50    0.003 p99    0.010 max    0.046 ms
+  cat & stock & price range    baseline - | optimized p50    0.033 p99    0.423 max    0.704 ms
+  t1 & t2 & stock              baseline - | optimized p50    0.070 p99    0.737 max    0.975 ms
+  t1 & stock                   baseline - | optimized p50    0.002 p99    0.005 max    0.060 ms
+t1 & stock result sizes: p50 179450, p99 45373723, max 45373723
+top-10 by price on t1 & stock (shards in parallel)
+  full AND + select           p50    3.630 p99  160.923 max  197.954 ms
+  cheapest-bucket walk        p50    1.471 p99    4.866 max    8.910 ms
+brand facet top-20 on t1 & stock
+  exact (shards in parallel)  p50    5.002 p99   97.376 max  116.962 ms
+  sampled first  10000       p50    0.806 p99    2.776 max    8.140 ms | top-10 overlap 97%, top-20 overlap 94% (over 752 queries larger than sample)
+  sampled first 100000       p50    4.918 p99   11.480 max   14.534 ms | top-10 overlap 99%, top-20 overlap 99% (over 558 queries larger than sample)
+throughput top-k mix (4 threads): 75019 QPS
+updates (single thread, one lock per update): stock toggle 5074105/s | price change 277835/s
+updates (single thread, batches of 1024, 50/50 stock/price): 512778/s
+peak RSS 6437 MB
+##### concurrent 100M
+N=100000000 shards=16 build 92.2s | bitmaps 3423 MB (terms 2964) + columns 858 MB | peak RSS after build 6233 MB
+concurrent: 3 reader threads (top-k mix) + 1 writer thread, 10 s per level
+  batch    1 target        0/s: achieved          0 writes/s | reads    54218 QPS, p50 0.007 p99 0.580 max 51.462 ms
+  batch    1 target   100000/s: achieved      69826 writes/s | reads    29439 QPS, p50 0.027 p99 0.850 max 12.171 ms
+  batch    1 target      max/s: achieved      74566 writes/s | reads    32552 QPS, p50 0.024 p99 0.773 max 13.539 ms
+  batch 1024 target   100000/s: achieved     100045 writes/s | reads    49987 QPS, p50 0.007 p99 0.630 max 6.077 ms
+  batch 1024 target  1000000/s: achieved     389632 writes/s | reads    26793 QPS, p50 0.009 p99 1.877 max 14.500 ms
+  batch 1024 target      max/s: achieved     369766 writes/s | reads    24223 QPS, p50 0.010 p99 1.997 max 13.248 ms
+peak RSS 6233 MB

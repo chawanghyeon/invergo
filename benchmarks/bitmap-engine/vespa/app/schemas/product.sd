@@ -1,0 +1,48 @@
+schema product {
+    document product {
+        field pop type int {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+        field cat type string {
+            indexing: attribute | summary
+            attribute: fast-search
+            match: word
+        }
+        field brand type string {
+            indexing: attribute | summary
+            attribute: fast-search
+            match: word
+        }
+        field price type int {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+        field stock type bool {
+            indexing: attribute | summary
+        }
+        field rocket type bool {
+            indexing: attribute | summary
+        }
+        field title_tok type string {
+            indexing: index | summary
+            index: enable-bm25
+            stemming: none
+        }
+    }
+    rank-profile popfirst {
+        first-phase {
+            expression: -attribute(pop)
+        }
+        match-phase {
+            attribute: pop
+            order: ascending
+            max-hits: 1000
+        }
+    }
+    rank-profile bm25 {
+        first-phase {
+            expression: bm25(title_tok)
+        }
+    }
+}

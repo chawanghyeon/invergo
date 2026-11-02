@@ -1,0 +1,3 @@
+N=10000000 shards=16 build 6.6s | bitmaps 273 MB (terms 226) + columns 86 MB | peak RSS after build 585 MB
+replica: applied 2000896 updates; lag primary-append -> replica-applied p50 1.27 p99 1.93 max 28.50 ms; digest f5976f630eb0fcfc == primary
+peak RSS 585 MB

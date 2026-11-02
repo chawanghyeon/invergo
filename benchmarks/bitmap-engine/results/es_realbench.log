@@ -1,0 +1,17 @@
+cross-check filters/price sort vs ES: 0 mismatches out of 600 queries
+BM25 vs ES (dfs_query_then_fetch): identical top-10 score lists (rel err < 1e-5) 1000/1000, max rel err 5.84e-8; identical docs above the 10th score (ties excluded) 1000/1000
+facets: ES terms agg with shard_size 300000 (exact) same top-20 counts as our exact 1000/1000
+facets vs exact: ES terms agg same top-20 counts 669/1000, same brands+counts above the 20th count 697/1000, top-10 overlap 98.7%
+ES latency on real data (single client, 1000 queries each, after 50 warm-up)
+  top10 pop word & stock                     client p50   2.057 p99   3.565 ms | took p50 1 p99 2 ms
+  top10 pop word1 & word2 & stock            client p50   2.115 p99   4.227 ms | took p50 1 p99 3 ms
+  top10 pop category & stock & rocket        client p50   2.090 p99   4.588 ms | took p50 1 p99 3 ms
+  top10 pop category & stock & price window  client p50   2.110 p99   5.478 ms | took p50 1 p99 3 ms
+  top10 pop category & word & stock          client p50   2.124 p99   4.437 ms | took p50 1 p99 3 ms
+  top10 price word & stock          client p50   3.061 p99   5.115 ms | took p50 2 p99 3 ms
+  brand facet word & stock          client p50   1.643 p99   4.389 ms | took p50 0 p99 2 ms
+  brand facet word & stock (exact)  client p50   4.198 p99  25.870 ms | took p50 3 p99 24 ms
+  BM25 2 words + stock              client p50   2.914 p99   9.047 ms | took p50 1 p99 8 ms
+  BM25 2 words + stock (dfs)        client p50   3.079 p99   8.738 ms | took p50 2 p99 7 ms
+ES throughput real top-k mix,  4 client threads: 1509 QPS, p50 2.46 p99 6.17 ms
+ES throughput real top-k mix, 16 client threads: 3184 QPS, p50 4.25 p99 15.53 ms

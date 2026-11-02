@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<services version="1.0">
+  <container id="default" version="1.0">
+    <search/>
+    <document-api/>
+  </container>
+  <content id="real" version="1.0">
+    <min-redundancy>1</min-redundancy>
+    <documents>
+      <document type="product" mode="index"/>
+    </documents>
+    <tuning>
+      <resource-limits>
+        <disk>0.99</disk>
+        <memory>0.95</memory>
+      </resource-limits>
+    </tuning>
+    <engine>
+      <proton>
+        <tuning>
+          <searchnode>
+            <requestthreads>
+              <persearch>4</persearch>
+            </requestthreads>
+          </searchnode>
+        </tuning>
+      </proton>
+    </engine>
+  </content>
+</services>

@@ -1,0 +1,39 @@
+== ours (http://127.0.0.1:9400)
+[popular-weighted (the set used for tuning)]
+  filters top-10 by popularity       single p50   0.441 p99   1.185 ms | 16 clients   10024 QPS p50 1.44 p99 4.30 ms (client core busy 98%)
+  brand facet top-20                 single p50   2.588 p99   6.550 ms
+  BM25 (+stock / +category&stock)    single p50   2.396 p99  11.651 ms | 16 clients    1417 QPS p50 10.27 p99 28.03 ms (client core busy 22%)
+[uniform held-out]
+  filters top-10 by popularity       single p50   0.411 p99   0.926 ms | 16 clients   10785 QPS p50 1.35 p99 3.94 ms (client core busy 98%)
+  brand facet top-20                 single p50   2.188 p99   4.770 ms
+  BM25 (+stock / +category&stock)    single p50   3.005 p99  30.578 ms | 16 clients     734 QPS p50 19.35 p99 59.92 ms (client core busy 14%)
+[long-tail held-out]
+  filters top-10 by popularity       single p50   0.486 p99   1.137 ms | 16 clients   10090 QPS p50 1.41 p99 4.63 ms (client core busy 99%)
+  brand facet top-20                 single p50   2.207 p99   5.103 ms
+  BM25 (+stock / +category&stock)    single p50   2.878 p99  27.853 ms | 16 clients     857 QPS p50 16.54 p99 54.18 ms (client core busy 15%)
+== es (http://127.0.0.1:9200)
+[popular-weighted (the set used for tuning)]
+  filters top-10 by popularity       single p50   2.393 p99   4.695 ms | 16 clients    1925 QPS p50 7.72 p99 19.35 ms (client core busy 41%)
+  brand facet top-20                 single p50   1.944 p99   5.436 ms
+  BM25 (+stock / +category&stock)    single p50   3.992 p99  15.773 ms | 16 clients     739 QPS p50 20.05 p99 53.69 ms (client core busy 18%)
+[uniform held-out]
+  filters top-10 by popularity       single p50   1.822 p99   3.816 ms | 16 clients    3308 QPS p50 4.32 p99 11.92 ms (client core busy 70%)
+  brand facet top-20                 single p50   1.516 p99   2.347 ms
+  BM25 (+stock / +category&stock)    single p50   3.676 p99  16.110 ms | 16 clients     833 QPS p50 17.34 p99 49.48 ms (client core busy 20%)
+[long-tail held-out]
+  filters top-10 by popularity       single p50   1.844 p99   2.982 ms | 16 clients    3325 QPS p50 4.27 p99 13.07 ms (client core busy 66%)
+  brand facet top-20                 single p50   1.426 p99   2.233 ms
+  BM25 (+stock / +category&stock)    single p50   3.151 p99  12.869 ms | 16 clients     974 QPS p50 14.81 p99 43.43 ms (client core busy 24%)
+== vespa (http://127.0.0.1:8080)
+[popular-weighted (the set used for tuning)]
+  filters top-10 by popularity       single p50   4.207 p99   8.262 ms | 16 clients     715 QPS p50 21.45 p99 43.16 ms (client core busy 19%)
+  brand facet top-20                 single p50  32.593 p99 348.007 ms
+  BM25 (+stock / +category&stock)    single p50   4.808 p99  54.337 ms | 16 clients     356 QPS p50 35.89 p99 205.27 ms (client core busy 10%)
+[uniform held-out]
+  filters top-10 by popularity       single p50   4.039 p99   9.189 ms | 16 clients     749 QPS p50 20.27 p99 43.80 ms (client core busy 21%)
+  brand facet top-20                 single p50  38.924 p99 407.662 ms
+  BM25 (+stock / +category&stock)    single p50   5.204 p99  67.277 ms | 16 clients     331 QPS p50 37.28 p99 203.22 ms (client core busy 10%)
+[long-tail held-out]
+  filters top-10 by popularity       single p50   4.374 p99  10.322 ms | 16 clients     797 QPS p50 19.16 p99 41.73 ms (client core busy 21%)
+  brand facet top-20                 single p50  20.726 p99 374.280 ms
+  BM25 (+stock / +category&stock)    single p50   4.354 p99  39.545 ms | 16 clients     445 QPS p50 29.22 p99 152.78 ms (client core busy 12%)

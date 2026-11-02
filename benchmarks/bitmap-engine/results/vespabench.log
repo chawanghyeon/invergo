@@ -1,0 +1,28 @@
+Vespa vs engine, filters + price sort: identical top-10 on 600/600
+Vespa match-phase (tuned) vs engine, filters: identical top-10 on 500/500
+Vespa grouping with precision(1e6) vs exact facets: identical top-20 counts on 100/100
+Vespa weakAnd(targetHits 10) bm25: top-10 overlap with exact BM25 91.2%
+Vespa grouping vs exact facets: identical top-20 counts on 5/100
+Vespa bm25 vs Lucene-identical BM25: top-10 overlap 93.9% over 200 queries; top score ratio mean 0.993
+Vespa single client (with all summary fields), 1000 queries per class after warm-up
+  top10 word & stock                       p50   3.994 p99   8.009 ms
+  top10 word1 & word2 & stock              p50   3.630 p99   7.300 ms
+  top10 category & stock & rocket          p50   3.628 p99   6.226 ms
+  top10 category & price window            p50   3.987 p99  14.969 ms
+  top10 category & word & stock            p50   3.311 p99   7.164 ms
+  top10 by price, word & stock             p50   4.116 p99   6.962 ms
+  brand facet top-20 (grouping)            p50  11.742 p99 137.015 ms
+  BM25 top10 (exact OR)                    p50   9.834 p99  42.215 ms
+  tuned: top10 word & stock (match-phase)  p50   3.598 p99   6.465 ms
+  tuned: top10 category&stock&rocket (mp)  p50   3.482 p99   6.867 ms
+  tuned: top10 category&word&stock (mp)    p50   3.348 p99   7.171 ms
+  tuned: brand facet exact (precision)     p50  25.770 p99 284.423 ms
+  tuned: BM25 weakAnd(targetHits 10)       p50   4.281 p99  62.342 ms
+  throughput filter top-k mix    4 clients:     668 QPS, p50 5.44 p99 15.99 ms
+  throughput filter top-k mix   16 clients:     910 QPS, p50 16.48 p99 40.18 ms
+  throughput BM25                4 clients:     138 QPS, p50 23.01 p99 100.66 ms
+  throughput BM25               16 clients:     146 QPS, p50 90.19 p99 384.65 ms
+  throughput tuned filter mix (mp)  4 clients:     657 QPS, p50 5.56 p99 16.72 ms
+  throughput tuned filter mix (mp) 16 clients:     943 QPS, p50 15.90 p99 40.09 ms
+  throughput tuned BM25 weakAnd  4 clients:     334 QPS, p50 8.38 p99 68.77 ms
+  throughput tuned BM25 weakAnd 16 clients:     472 QPS, p50 26.46 p99 169.37 ms

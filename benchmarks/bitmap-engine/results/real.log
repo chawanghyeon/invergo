@@ -1,0 +1,13 @@
+real catalog: 2898337 items, 60113418 title tokens (20.7/item), vocab 730757, categories 1272, brands 203624 | parse 21.8s
+bitmaps 470 MB (titles 462 MB) + columns 25 MB | build 1.1s
+correctness: identical to full-AND baseline
+1-word query result sizes: p50 31719, p99 1006960, max 1006960
+top-10 by popularity, single thread (baseline full AND | optimized)
+  word & stock                     p50   0.342 p99   1.495 max   2.120 ms | p50   0.001 p99   0.021 max   0.058 ms
+  word1 & word2 & stock            p50   0.331 p99   1.924 max   3.501 ms | p50   0.004 p99   0.105 max   0.202 ms
+  category & stock & rocket        p50   0.047 p99   0.620 max   1.149 ms | p50   0.002 p99   0.007 max   0.036 ms
+  category & stock & price window  p50   0.645 p99   6.424 max   7.036 ms | p50   0.008 p99   0.125 max   0.750 ms
+  category & word & stock          p50   0.252 p99   1.710 max   2.269 ms | p50   0.004 p99   0.163 max   0.434 ms
+  top-10 by price, word & stock   full p50   0.642 p99   4.573 max   5.730 ms | bucket walk p50   0.412 p99   1.582 max   7.209 ms
+  brand facet (203624 brands) exact p50   4.071 p99  34.604 max  66.885 ms | sampled 10k p50   1.477 p99   2.636 max   3.026 ms | top-10 overlap 47% over 661 large queries
+throughput top-k mix (4 threads): 414224 QPS

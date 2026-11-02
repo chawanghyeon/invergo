@@ -1,0 +1,15 @@
+[http://127.0.0.1:9200] single client, 1000 queries per class (after a warm-up pass)
+  top10+_source word & stock               p50   2.196 p99   3.405 ms
+  top10+_source word1 & word2 & stock      p50   2.411 p99   3.981 ms
+  top10+_source category & stock & rocket  p50   2.252 p99   5.087 ms
+  top10+_source category & price window    p50   2.407 p99   4.355 ms
+  top10+_source category & word & stock    p50   2.385 p99   4.165 ms
+  top10+_source by price, word & stock     p50   3.332 p99   6.352 ms
+  brand facet top-20, word & stock         p50   1.786 p99   3.994 ms
+  BM25 top10+_source                       p50   3.115 p99   8.955 ms
+  throughput filter top-k mix +_source   4 clients:    1502 QPS, p50 2.50 p99 4.99 ms
+  throughput filter top-k mix +_source  16 clients:    2843 QPS, p50 4.83 p99 15.97 ms
+  throughput BM25 +_source               4 clients:     707 QPS, p50 5.05 p99 15.71 ms
+  throughput BM25 +_source              16 clients:     943 QPS, p50 16.06 p99 36.72 ms
+  durable bulk updates (fsync per request), 4 clients x 1000 docs: 27500 docs/s
+  filter top-k +_source latency during 2-client bulk updates: p50 2.10 p99 14.88 max 119.60 ms
