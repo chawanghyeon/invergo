@@ -1,0 +1,13 @@
+ops: 294852 (150000 title changes of built docs, 100000 new docs, 25000 stock/price changes of new docs, 19852 deletes); changed or new docs alive at the end: 240601
+before changes, BM25+filters 16 clients (with _source): ES 627 QPS p99 140.0 ms | ours 1041 QPS p99 20.0 ms
+apply ES: 294852 ops in 11.7s (25242 ops/s), server 15.5 CPU s
+apply ours: 294852 ops in 20.5s (14391 ops/s), server 30.4 CPU s
+  fold started after 147000 of 294852 ops, writes continued; fold returned after 52.7s: {"build_s":17.883117285,"catchup_s":5.379221892,"docs":2971837,"extract_s":28.45028022,"folded_changes":146079,"generation":1,"holes":0,"mem":"VmHWM: 3712388, VmRSS: 3512132","replaced_or_deleted":72579,"replayed_ops":147852,"total_s":51.712624733,"write_pause_ms":0.019329}
+after changes, before ES merge: ES 748 QPS p99 55.1 ms | ours 1168 QPS p99 29.2 ms
+  [ES not merged] BM25+filters top-10 ES == ours: held-out 92/600 (ties aside 99), aimed at changed/new docs 101/600 (ties aside 114)
+ES force merge 21.6s; ES docs "2978485" deleted "0"
+  [ES merged] BM25+filters top-10 ES == ours: held-out 600/600 (ties aside 600), aimed at changed/new docs 600/600 (ties aside 600)
+  popularity top-10 ES == ours: held-out 900/900, aimed 600/600; price top-10: held-out 300/300, aimed 300/300
+  brand facet top-20 ES == ours exact: held-out 300/300, aimed 300/300; ours fast path: held-out 300/300, aimed 300/300
+  _source of hits (id, title, price, stock, cat) equal: 6000/6000
+after ES merge: ES 924 QPS p99 46.3 ms | ours (delta not folded) 1217 QPS p99 28.6 ms

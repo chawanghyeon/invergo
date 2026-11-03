@@ -85,8 +85,9 @@ impl Node {
                 let p = r.get("price")?;
                 let lo = p.get("gte").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
                 let hi = p.get("lt").and_then(|x| x.as_u64()).map(|x| x as u32).unwrap_or(u32::MAX);
-                let (b0, b1) = (bucket_of(lo), if hi == u32::MAX { N_BUCKET } else { bucket_of(hi.saturating_sub(1)) + 1 });
-                if edge(b0) != lo || (hi != u32::MAX && edge(b1) != hi) {
+                let ix = &self.ri.ix;
+                let (b0, b1) = (ix.bucket_of(lo), if hi == u32::MAX { N_BUCKET } else { ix.bucket_of(hi.saturating_sub(1)) + 1 });
+                if ix.edge(b0) != lo || (hi != u32::MAX && ix.edge(b1) != hi) {
                     return None; // only bucket-aligned ranges in this test
                 }
                 q.push(Clause::Buckets(b0, b1));

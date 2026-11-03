@@ -60,10 +60,11 @@ pub fn doc(d: u64) -> Doc {
     }
 }
 
-/// Price bucket b covers [edge(b), edge(b+1)), log-spaced between 100 and 10M won (integer edges).
+/// Price bucket b covers [edge(b), edge(b+1)). Default: log-spaced between 100 and 10M won
+/// (synthetic catalog). A real catalog calls `set_price_edges` first: equi-depth buckets.
+static EDGES: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
 fn edges() -> &'static [u32] {
-    static E: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
-    E.get_or_init(|| {
+    EDGES.get_or_init(|| {
         (0..=N_BUCKET)
             .map(|b| match b {
                 0 => 0,
@@ -72,6 +73,49 @@ fn edges() -> &'static [u32] {
             })
             .collect()
     })
+}
+/// Equi-depth price buckets from the catalog's prices: each bucket holds about n / N_BUCKET items,
+/// and a price shared by more items than that (e.g. a "no price" sentinel) gets a bucket of its
+/// own, [p, p + 1). An exact price window then never has to scan more than about n / N_BUCKET
+/// items of one partially covered bucket. Deterministic in the prices, so every process that
+/// loads the same catalog (engine, ES client) gets the same edges. Must run before any bucket use.
+pub fn set_price_edges(prices: &[u32]) {
+    let e = equi_depth_edges(prices);
+    if let Err(e) = EDGES.set(e.clone()) {
+        assert_eq!(EDGES.get().unwrap(), &e, "price edges already initialised differently: {}", e.len());
+    }
+}
+pub fn equi_depth_edges(prices: &[u32]) -> Vec<u32> {
+    let mut v = prices.to_vec();
+    v.sort_unstable();
+    let (n, nb) = (v.len(), N_BUCKET as usize);
+    let mut starts: Vec<u32> = vec![0];
+    let (mut cur, mut done) = (0usize, 0usize); // items in the open bucket / in closed buckets
+    for run in v.chunk_by(|a, b| a == b) {
+        let (p, c) = (run[0], run.len());
+        let step = ((n - done) / (nb - starts.len() + 1)).max(1);
+        let heavy = c >= step;
+        // close the open bucket before p (the last start is <= an earlier price < p)
+        if starts.len() < nb && cur > 0 && (heavy || cur + c > step) {
+            starts.push(p);
+            done += cur;
+            cur = 0;
+        }
+        cur += c;
+        // a heavy price ends its bucket right after itself: [start, p + 1) holds only p
+        if heavy && starts.len() < nb && p < u32::MAX - 1 {
+            starts.push(p + 1);
+            done += cur;
+            cur = 0;
+        }
+    }
+    let mut e = starts;
+    e.resize(nb, u32::MAX);
+    e.push(u32::MAX);
+    e
+}
+pub fn edges_global() -> Vec<u32> {
+    edges().to_vec()
 }
 pub fn edge(b: u32) -> u32 {
     edges()[b.min(N_BUCKET) as usize]
@@ -273,7 +317,7 @@ pub mod snap {
         let brand = r_u32s(&mut r)?;
         let price = r_u32s(&mut r)?.into_iter().map(AtomicU32::new).collect();
         let bucket = r_bytes(&mut r)?.into_iter().map(AtomicU8::new).collect();
-        Ok(Index { shards, shard_size, n, brand, price, bucket })
+        Ok(Index { shards, shard_size, n, brand, price, bucket, edges: edges().to_vec() })
     }
 
     /// 64-bit digest of the mutable state (stock bitmaps, price buckets, prices) for replica checks.
@@ -306,6 +350,9 @@ pub struct Index {
     pub brand: Vec<u32>,
     pub price: Vec<AtomicU32>,
     pub bucket: Vec<AtomicU8>,
+    /// price bucket edges of this index (N_BUCKET + 1 values); real catalogs: equi-depth over
+    /// the prices at build time, recomputed by every rebuild
+    pub edges: Vec<u32>,
 }
 
 /// Build bitmaps for keys 0..n_keys from (key << 32 | docid) pairs: sort once, then create each
@@ -357,10 +404,19 @@ pub fn build(n: u32, s: u32, _parallel: usize) -> Index {
     let price: Vec<AtomicU32> = (0..n as u64).into_par_iter().map(|d| AtomicU32::new(doc(d).price)).collect();
     let bucket: Vec<AtomicU8> =
         price.par_iter().map(|p| AtomicU8::new(bucket_of(p.load(Relaxed)) as u8)).collect();
-    Index { shards, shard_size, n, brand, price, bucket }
+    Index { shards, shard_size, n, brand, price, bucket, edges: edges().to_vec() }
 }
 
+pub fn bucket_in(e: &[u32], p: u32) -> u32 {
+    (e[..N_BUCKET as usize].partition_point(|&v| v <= p) - 1) as u32
+}
 impl Index {
+    pub fn bucket_of(&self, p: u32) -> u32 {
+        bucket_in(&self.edges, p)
+    }
+    pub fn edge(&self, b: u32) -> u32 {
+        self.edges[b.min(N_BUCKET) as usize]
+    }
     pub fn bitmap_mb(&self) -> (f64, f64) {
         let (mut all, mut terms) = (0usize, 0usize);
         for sh in &self.shards {
@@ -386,7 +442,7 @@ impl Index {
         }
     }
     pub fn set_price(&self, d: u32, p: u32) {
-        let (ob, nb) = (self.bucket[d as usize].load(Relaxed) as u32, bucket_of(p));
+        let (ob, nb) = (self.bucket[d as usize].load(Relaxed) as u32, self.bucket_of(p));
         if ob != nb {
             let mut sh = self.shards[(d / self.shard_size) as usize].write();
             sh.bucket[ob as usize].remove(d);
@@ -416,7 +472,7 @@ impl Index {
                         }
                     }
                     Update::Price(d, p) => {
-                        let (ob, nb) = (self.bucket[d as usize].load(Relaxed) as u32, bucket_of(p));
+                        let (ob, nb) = (self.bucket[d as usize].load(Relaxed) as u32, self.bucket_of(p));
                         if ob != nb {
                             sh.bucket[ob as usize].remove(d);
                             sh.bucket[nb as usize].insert(d);
@@ -663,56 +719,76 @@ impl Index {
 
     /// Baseline: full AND, then select k cheapest (all shards in parallel).
     pub fn topk_price_full(&self, q: &[Clause]) -> Vec<(u32, u32)> {
+        self.topk_price_full_k(q, K)
+    }
+    pub fn topk_price(&self, q: &[Clause]) -> Vec<(u32, u32)> {
+        self.topk_price_k(q, K)
+    }
+    pub fn topk_price_full_k(&self, q: &[Clause], k: usize) -> Vec<(u32, u32)> {
         let mut c: Vec<(u32, u32)> = self
             .shards
             .par_iter()
             .flat_map_iter(|sh| {
                 let r = and_full(&sh.read(), q);
                 let mut v: Vec<(u32, u32)> = r.iter().map(|d| (self.price[d as usize].load(Relaxed), d)).collect();
-                if v.len() > K {
-                    v.select_nth_unstable(K);
-                    v.truncate(K);
+                if v.len() > k {
+                    v.select_nth_unstable(k);
+                    v.truncate(k);
                 }
                 v
             })
             .collect();
         c.sort_unstable();
-        c.truncate(K);
+        c.truncate(k);
         c
     }
 
     /// Cheapest-first bucket walk: AND the query with one price bucket at a time (shards in
     /// parallel) and stop once k candidates are collected; exact because every cheaper bucket
     /// has been fully scanned.
-    pub fn topk_price(&self, q: &[Clause]) -> Vec<(u32, u32)> {
-        // Small results: one full AND is cheaper than up to 256 bucket passes.
+    pub fn topk_price_k(&self, q: &[Clause], k: usize) -> Vec<(u32, u32)> {
+        // Small results: one full AND is cheaper than bucket passes.
         let est: u64 = q
             .iter()
             .map(|c| self.shards.iter().map(|sh| clause_src(&sh.read(), c).iter().map(|b| b.len()).sum::<u64>()).sum::<u64>())
             .min()
             .unwrap_or(0);
-        if est < 200_000 {
-            return self.topk_price_full(q);
+        if est < 20_000 {
+            return self.topk_price_full_k(q, k);
+        }
+        // Walk the buckets the query allows, cheapest first, until k are found.
+        let (mut blo, mut bhi) = (0, N_BUCKET);
+        for c in q {
+            if let Clause::Buckets(a, b) = c {
+                blo = blo.max(*a);
+                bhi = bhi.min(*b);
+            }
         }
         let mut cand: Vec<(u32, u32)> = Vec::new();
-        for b in 0..N_BUCKET {
+        for b in blo..bhi {
             let mut qb = q.to_vec();
             qb.push(Clause::Buckets(b, b + 1));
-            let found: Vec<(u32, u32)> = self
-                .shards
-                .par_iter()
-                .flat_map_iter(|sh| {
-                    let r = and_full(&sh.read(), &qb);
-                    r.iter().map(|d| (self.price[d as usize].load(Relaxed), d)).collect::<Vec<_>>()
-                })
-                .collect();
-            cand.extend(found);
-            if cand.len() >= K {
+            if self.edge(b + 1) == self.edge(b).saturating_add(1) {
+                // one price only: (price, docid) order is docid order, so the first k suffice
+                let ids = self.topk_pop(&qb, k - cand.len());
+                cand.extend(ids.into_iter().map(|d| (self.price[d as usize].load(Relaxed), d)));
+            } else {
+                let found: Vec<(u32, u32)> = self
+                    .shards
+                    .par_iter()
+                    .flat_map_iter(|sh| {
+                        let r = and_full(&sh.read(), &qb);
+                        r.iter().map(|d| (self.price[d as usize].load(Relaxed), d)).collect::<Vec<_>>()
+                    })
+                    .collect();
+                cand.extend(found);
+            }
+            if cand.len() >= k {
                 break;
             }
         }
         cand.sort_unstable();
-        cand.truncate(K);
+        cand.truncate(k);
         cand
     }
 
@@ -833,3 +909,28 @@ pub fn serve_http(ix: &Index) {
     });
 }
 
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+    #[test]
+    fn equi_depth_isolates_heavy_values() {
+        let mut p: Vec<u32> = (0..100_000u32).map(|i| 100 + (i * 7919) % 50_000).collect();
+        p.extend(std::iter::repeat(9_999_999).take(300_000));
+        p.extend(std::iter::repeat(1_000).take(50_000));
+        let e = equi_depth_edges(&p);
+        assert_eq!(e.len(), N_BUCKET as usize + 1);
+        assert!(e.windows(2).all(|w| w[0] <= w[1]));
+        assert!(e[..N_BUCKET as usize].windows(2).filter(|w| w[0] < u32::MAX).all(|w| w[0] < w[1]));
+        let b = |x: u32| e[..N_BUCKET as usize].partition_point(|&v| v <= x) - 1;
+        let mut cnt = vec![0usize; N_BUCKET as usize];
+        for &x in &p { cnt[b(x)] += 1; }
+        // the heavy values sit alone in their bucket
+        for h in [9_999_999u32, 1_000] {
+            assert!(p.iter().filter(|&&x| b(x) == b(h)).all(|&x| x == h));
+        }
+        // every mixed bucket is small
+        let mixed_max = (0..N_BUCKET as usize).filter(|&i| !p.iter().any(|&x| b(x) == i && (x == 9_999_999 || x == 1_000))).map(|i| cnt[i]).max().unwrap();
+        assert!(mixed_max <= 2 * 450_000 / 256 + 1, "mixed bucket {mixed_max}");
+    }
+}

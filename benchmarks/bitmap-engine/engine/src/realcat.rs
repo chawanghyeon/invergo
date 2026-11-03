@@ -82,6 +82,7 @@ pub fn load(path: &str) -> RealCat {
     rc.vocab = vocab;
     rc.n_cat = cmap.len();
     rc.n_brand = bmap.len();
+    crate::set_price_edges(&rc.price);
     rc
 }
 
@@ -127,10 +128,132 @@ pub struct RealIndex {
     pub head_cands: HashMap<u32, Vec<u32>>, // head term -> candidate brands (offline)
     pub n_brand: usize,
     pub build_times: Vec<(String, f64)>,
+    pub sum_ttf: u64,
+    /// changed and new documents since the build (see `Live`)
+    pub live: RwLock<Live>,
+}
+
+/// A document added or replaced after the build. Its key orders it like a docid: a replaced
+/// document keeps its docid (popularity rank), a new one gets a key >= n.
+pub struct DDoc {
+    pub tokens: Vec<u32>,
+    pub norm: u8,
+    pub cat: u32,
+    pub brand: u32,
+    pub price: u32,
+    pub src: String, // static _source fields as JSON (the live ones are spliced in when served)
+}
+/// Changes since the build, kept small and folded into the next full build:
+///   * tomb: built docids that were replaced or deleted (skipped by every query)
+///   * docs/post/attribute bitmaps: the replaced and new documents, keyed as above
+///   * exact collection statistics (df, doc count, total length) after all changes, so BM25
+///     scores stay exact; Lucene instead keeps deleted docs in its statistics until a merge.
+pub struct Live {
+    pub tomb: RoaringBitmap,
+    pub docs: HashMap<u32, DDoc>,
+    pub all: RoaringBitmap,
+    pub post: HashMap<u32, RoaringBitmap>,
+    /// per term: (key, tf, norm) sorted by key, for scoring without per-doc lookups
+    pub imp: HashMap<u32, Vec<(u32, u8, u8)>>,
+    pub stock: RoaringBitmap,
+    pub rocket: RoaringBitmap,
+    pub cat: HashMap<u32, RoaringBitmap>,
+    pub bucket: Vec<RoaringBitmap>,
+    pub df_adj: HashMap<u32, i64>,
+    pub doc_count: i64,
+    pub sum_ttf: i64,
+    pub avgdl: f32,
+    pub norm_inv: [f32; 256],
+    /// factor that keeps build-time impact bounds (tf * norm_inv) >= the current ones
+    pub scale: f32,
+    pub terms: HashMap<String, u32>, // words first seen after the build, ids from n_main_vocab
+    pub n_main_vocab: u32,
+    pub n_cat: u32,
+    pub edges: Vec<u32>, // the built index's price buckets
+}
+impl Live {
+    fn bucket_of(&self, p: u32) -> u32 {
+        crate::bucket_in(&self.edges, p)
+    }
+    fn new(doc_count: u32, sum_ttf: u64, avgdl: f32, norm_inv: [f32; 256], n_main_vocab: u32, n_cat: u32, edges: Vec<u32>) -> Live {
+        Live {
+            tomb: RoaringBitmap::new(), docs: HashMap::new(), all: RoaringBitmap::new(), post: HashMap::new(), imp: HashMap::new(),
+            stock: RoaringBitmap::new(), rocket: RoaringBitmap::new(), cat: HashMap::new(),
+            bucket: vec![RoaringBitmap::new(); N_BUCKET as usize], df_adj: HashMap::new(),
+            doc_count: doc_count as i64, sum_ttf: sum_ttf as i64, avgdl, norm_inv, scale: 1.0, terms: HashMap::new(), n_main_vocab, n_cat, edges,
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.docs.is_empty() && self.tomb.is_empty()
+    }
+    /// Docs of the delta matching every clause (starting from the smallest clause set).
+    pub fn and(&self, q: &[Clause]) -> RoaringBitmap {
+        let empty = RoaringBitmap::new();
+        let mut owned: Vec<RoaringBitmap> = Vec::new();
+        let mut sets: Vec<&RoaringBitmap> = Vec::new();
+        let mut bucket_sets = Vec::new();
+        for c in q {
+            match c {
+                Clause::Cat(x) => sets.push(self.cat.get(x).unwrap_or(&empty)),
+                Clause::Term(x) => sets.push(self.post.get(x).unwrap_or(&empty)),
+                Clause::Stock => sets.push(&self.stock),
+                Clause::Rocket => sets.push(&self.rocket),
+                Clause::Buckets(a, b) => {
+                    let mut u = RoaringBitmap::new();
+                    for bm in &self.bucket[*a as usize..(*b).min(N_BUCKET) as usize] {
+                        u |= bm;
+                    }
+                    bucket_sets.push(u);
+                }
+            }
+        }
+        owned.extend(bucket_sets);
+        sets.extend(owned.iter());
+        if sets.is_empty() {
+            return self.all.clone();
+        }
+        sets.sort_by_key(|b| b.len());
+        let mut acc = sets[0].clone();
+        for b in &sets[1..] {
+            if acc.is_empty() {
+                break;
+            }
+            acc &= *b;
+        }
+        acc
+    }
+    /// Does delta doc `key` match one clause?
+    fn has(&self, c: &Clause, key: u32) -> bool {
+        match c {
+            Clause::Cat(x) => self.cat.get(x).is_some_and(|b| b.contains(key)),
+            Clause::Term(x) => self.post.get(x).is_some_and(|b| b.contains(key)),
+            Clause::Stock => self.stock.contains(key),
+            Clause::Rocket => self.rocket.contains(key),
+            Clause::Buckets(a, b) => {
+                let bk = self.bucket_of(self.docs[&key].price);
+                *a <= bk && bk < *b
+            }
+        }
+    }
 }
 
 pub fn build(rc: &RealCat, s: u32) -> RealIndex {
     build_part(rc, s, 0, rc.n)
+}
+/// Build from a catalog state (a fold): live stock/rocket values instead of the synthetic ones,
+/// and `holes` (deleted keys, kept so docids do not move) marked as removed.
+pub fn build_state(rc: &RealCat, s: u32, stock: &[bool], rocket: &[bool], holes: RoaringBitmap) -> RealIndex {
+    let ri = build_part(rc, s, 0, rc.n);
+    for (si, sh) in ri.ix.shards.iter().enumerate() {
+        let (lo, hi) = (si as u32 * ri.ix.shard_size, ((si as u32 + 1) * ri.ix.shard_size).min(rc.n));
+        let mut sh = sh.write();
+        sh.stock = RoaringBitmap::from_sorted_iter((lo..hi).filter(|&d| stock[d as usize])).unwrap();
+        sh.rocket = RoaringBitmap::from_sorted_iter((lo..hi).filter(|&d| rocket[d as usize])).unwrap();
+        sh.stock.optimize();
+        sh.rocket.optimize();
+    }
+    ri.live.write().tomb = holes;
+    ri
 }
 /// Index only docids in [keep_lo, keep_hi) (a shard node of a partitioned cluster), while BM25
 /// statistics, block-max bounds and facet candidates are computed over the whole catalog, so a
@@ -139,6 +262,10 @@ pub fn build_part(rc: &RealCat, s: u32, keep_lo: u32, keep_hi: u32) -> RealIndex
     let t_all = std::time::Instant::now();
     let n = rc.n;
     let shard_size = n.div_ceil(s);
+    // equi-depth price buckets over this build's prices (kept by the index, so a rebuild after
+    // the price distribution changed gets balanced buckets again)
+    let edges = crate::equi_depth_edges(&rc.price);
+    let bucket_of = |p: u32| crate::bucket_in(&edges, p);
     let mut shards = Vec::new();
     let mut brands = Vec::new();
     let mut tf2 = Vec::new();
@@ -191,6 +318,7 @@ pub fn build_part(rc: &RealCat, s: u32, keep_lo: u32, keep_hi: u32) -> RealIndex
         brand: rc.brand.clone(),
         price: rc.price.iter().map(|&p| AtomicU32::new(p)).collect(),
         bucket: rc.price.iter().map(|&p| AtomicU8::new(bucket_of(p) as u8)).collect(),
+        edges: edges.clone(),
     };
 
     let t_index = t_all.elapsed().as_secs_f64();
@@ -279,17 +407,29 @@ pub fn build_part(rc: &RealCat, s: u32, keep_lo: u32, keep_hi: u32) -> RealIndex
         ("facet candidate brands (offline)".to_string(), t_fc.elapsed().as_secs_f64()),
         ("total".to_string(), t_all.elapsed().as_secs_f64()),
     ];
-    RealIndex { ix, brands, norm, df, tfmax, maxtni, bm_row, bm, tni_max, tf2, doc_count, avgdl, norm_inv, head_cands, n_brand: rc.n_brand, build_times }
+    let live = RwLock::new(Live::new(doc_count, sum_ttf, avgdl, norm_inv, rc.vocab.len() as u32, rc.n_cat as u32, ix.edges.clone()));
+    RealIndex { ix, brands, norm, df, tfmax, maxtni, bm_row, bm, tni_max, tf2, doc_count, avgdl, norm_inv, head_cands, n_brand: rc.n_brand, build_times, sum_ttf, live }
 }
 
 impl RealIndex {
-    pub fn idf(&self, w: u32) -> f32 {
-        let df = self.df[w as usize] as f64;
-        (1.0 + (self.doc_count as f64 - df + 0.5) / (df + 0.5)).ln() as f32
+    /// Current document frequency (build value plus changes since).
+    fn df_now(&self, lv: &Live, w: u32) -> f64 {
+        let base = self.df.get(w as usize).copied().unwrap_or(0) as i64;
+        (base + lv.df_adj.get(&w).copied().unwrap_or(0)) as f64
+    }
+    pub fn idf_l(&self, lv: &Live, w: u32) -> f32 {
+        let df = self.df_now(lv, w);
+        (1.0 + (lv.doc_count as f64 - df + 0.5) / (df + 0.5)).ln() as f32
     }
     /// Lucene/ES term weight: boost (k1 + 1) * idf, in float.
+    pub fn weight_l(&self, lv: &Live, w: u32) -> f32 {
+        (K1 + 1f32) * self.idf_l(lv, w)
+    }
+    pub fn idf(&self, w: u32) -> f32 {
+        self.idf_l(&self.live.read(), w)
+    }
     pub fn weight(&self, w: u32) -> f32 {
-        (K1 + 1f32) * self.idf(w)
+        self.weight_l(&self.live.read(), w)
     }
     fn tf(&self, shard: usize, w: u32, d: u32) -> u8 {
         match self.tf2[shard].get(&w) {
@@ -298,9 +438,70 @@ impl RealIndex {
         }
     }
     #[inline]
-    fn term_score(&self, idf: f32, tf: u8, d: u32) -> f32 {
-        let ni = self.norm_inv[self.norm[d as usize] as usize];
+    fn term_score(&self, ni_tab: &[f32; 256], idf: f32, tf: u8, d: u32) -> f32 {
+        let ni = ni_tab[self.norm[d as usize] as usize];
         idf - idf / (1f32 + tf as f32 * ni)
+    }
+    #[inline]
+    fn term_score_n(ni_tab: &[f32; 256], idf: f32, tf: u8, norm: u8) -> f32 {
+        let ni = ni_tab[norm as usize];
+        idf - idf / (1f32 + tf as f32 * ni)
+    }
+    /// Clauses the built index can evaluate (terms and categories that existed at build time).
+    fn main_ok(&self, lv: &Live, q: &[Clause]) -> bool {
+        q.iter().all(|c| match c {
+            Clause::Term(w) => *w < lv.n_main_vocab,
+            Clause::Cat(x) => *x < lv.n_cat,
+            _ => true,
+        })
+    }
+    /// BM25 over the delta: doc-at-a-time over the query terms' (key, tf, norm) lists.
+    fn delta_bm25(&self, lv: &Live, terms: &[u32], filters: &[Clause], k: usize) -> Vec<(f32, u32)> {
+        if lv.docs.is_empty() {
+            return vec![];
+        }
+        let lists: Vec<(&[(u32, u8, u8)], f32)> = terms.iter().map(|w| (lv.imp.get(w).map(|l| l.as_slice()).unwrap_or(&[]), self.weight_l(lv, *w))).collect();
+        let mut pos = vec![0usize; lists.len()];
+        let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(OrdF32, std::cmp::Reverse<u32>)>> = Default::default();
+        loop {
+            let mut key = u32::MAX;
+            for (i, (l, _)) in lists.iter().enumerate() {
+                if let Some(x) = l.get(pos[i]) {
+                    key = key.min(x.0);
+                }
+            }
+            if key == u32::MAX {
+                break;
+            }
+            let mut score = 0f32;
+            for (i, (l, idf)) in lists.iter().enumerate() {
+                if let Some(&(kk, tf, norm)) = l.get(pos[i]) {
+                    if kk == key {
+                        score += Self::term_score_n(&lv.norm_inv, *idf, tf, norm);
+                        pos[i] += 1;
+                    }
+                }
+            }
+            if !filters.iter().all(|c| lv.has(c, key)) {
+                continue;
+            }
+            let e = std::cmp::Reverse((OrdF32(score), std::cmp::Reverse(key)));
+            if heap.len() < k {
+                heap.push(e);
+            } else if e < *heap.peek().unwrap() {
+                heap.pop();
+                heap.push(e);
+            }
+        }
+        let mut v: Vec<(f32, u32)> = heap.into_iter().map(|r| (r.0 .0 .0, r.0 .1 .0)).collect();
+        v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
+        v
+    }
+    fn merge_scored(mut a: Vec<(f32, u32)>, b: Vec<(f32, u32)>, k: usize) -> Vec<(f32, u32)> {
+        a.extend(b);
+        a.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
+        a.truncate(k);
+        a
     }
 
     /// Exhaustive BM25 (reference): OR over terms, in-stock filter, top-k by score then docid.
@@ -308,16 +509,19 @@ impl RealIndex {
         self.bm25_exhaustive_f(terms, &[Clause::Stock], k)
     }
     pub fn bm25_exhaustive_f(&self, terms: &[u32], filters: &[Clause], k: usize) -> Vec<(f32, u32)> {
+        let lv = self.live.read();
         let mut scores: HashMap<u32, f32> = HashMap::new();
-        for (si, sh) in self.ix.shards.iter().enumerate() {
-            let sh = sh.read();
-            let fb: Vec<RoaringBitmap> = filters.iter().map(|c| clause_src(&sh, c).iter().fold(RoaringBitmap::new(), |mut a, s| { a |= s.to_bitmap(); a })).collect();
-            for &w in terms {
-                let idf = self.weight(w);
-                let mut it = sh.term.src(w).iter();
-                while let Some(d) = it.next() {
-                    if fb.iter().all(|b| b.contains(d)) {
-                        *scores.entry(d).or_default() += self.term_score(idf, self.tf(si, w, d), d);
+        if self.main_ok(&lv, filters) {
+            for (si, sh) in self.ix.shards.iter().enumerate() {
+                let sh = sh.read();
+                let fb: Vec<RoaringBitmap> = filters.iter().map(|c| clause_src(&sh, c).iter().fold(RoaringBitmap::new(), |mut a, s| { a |= s.to_bitmap(); a })).collect();
+                for &w in terms.iter().filter(|&&w| w < lv.n_main_vocab) {
+                    let idf = self.weight_l(&lv, w);
+                    let mut it = sh.term.src(w).iter();
+                    while let Some(d) = it.next() {
+                        if !lv.tomb.contains(d) && fb.iter().all(|b| b.contains(d)) {
+                            *scores.entry(d).or_default() += self.term_score(&lv.norm_inv, idf, self.tf(si, w, d), d);
+                        }
                     }
                 }
             }
@@ -325,7 +529,8 @@ impl RealIndex {
         let mut v: Vec<(f32, u32)> = scores.into_iter().map(|(d, s)| (s, d)).collect();
         v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
         v.truncate(k);
-        v
+        let dl = self.delta_bm25(&lv, terms, filters, k);
+        Self::merge_scored(v, dl, k)
     }
 
     /// MaxScore BM25: terms sorted by upper bound; once the k-th score exceeds the sum of the
@@ -336,22 +541,35 @@ impl RealIndex {
     /// BM25 over terms (OR), restricted to docs matching every filter clause.
     pub fn bm25_filtered(&self, terms: &[u32], filters: &[Clause], k: usize) -> Vec<(f32, u32)> {
         let all: Vec<usize> = (0..self.ix.shards.len()).collect();
-        self.bm25_shards_f(terms, filters, k, &all)
+        let lv = self.live.read();
+        // built docs (replaced/deleted ones skipped) and the delta separately, then merge by
+        // (score, key): exact, ties included
+        let main_terms: Vec<u32> = terms.iter().copied().filter(|&w| w < lv.n_main_vocab).collect();
+        let main = if self.main_ok(&lv, filters) && !main_terms.is_empty() { self.bm25_shards_f(&lv, &main_terms, filters, k, &all) } else { vec![] };
+        if lv.docs.is_empty() {
+            return main;
+        }
+        let dl = self.delta_bm25(&lv, terms, filters, k);
+        Self::merge_scored(main, dl, k)
     }
     /// Same, one task per shard in parallel, then merge (lower latency, less pruning per shard).
     pub fn bm25_topk_par(&self, terms: &[u32], k: usize) -> Vec<(f32, u32)> {
         let mut v: Vec<(f32, u32)> =
-            (0..self.ix.shards.len()).into_par_iter().flat_map_iter(|si| self.bm25_shards_f(terms, &[Clause::Stock], k, &[si])).collect();
+            (0..self.ix.shards.len()).into_par_iter().flat_map_iter(|si| { let lv = self.live.read(); self.bm25_shards_f(&lv, terms, &[Clause::Stock], k, &[si]) }).collect();
         v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
         v.truncate(k);
         v
     }
-    fn bm25_shards_f(&self, terms: &[u32], filters: &[Clause], k: usize, shard_ids: &[usize]) -> Vec<(f32, u32)> {
+    fn bm25_shards_f(&self, lv: &Live, terms: &[u32], filters: &[Clause], k: usize, shard_ids: &[usize]) -> Vec<(f32, u32)> {
+        // bounds from build-time impacts, scaled so they stay upper bounds after avgdl changes
+        let scale = lv.scale;
+        let ni_tab = &lv.norm_inv;
+        let check_tomb = !lv.tomb.is_empty();
         let mut tw: Vec<(f32, f32, u32)> = terms
             .iter()
             .map(|&w| {
-                let idf = self.weight(w);
-                let ub = idf - idf / (1f32 + self.maxtni[w as usize]);
+                let idf = self.weight_l(lv, w);
+                let ub = idf - idf / (1f32 + self.maxtni[w as usize] * scale);
                 (ub, idf, w)
             })
             .collect();
@@ -455,7 +673,7 @@ impl RealIndex {
                     match rows[i] {
                         Some(r) if new_win => {
                             let q = self.bm[r][win as usize];
-                            wub[i] = if q == 0 { 0.0 } else { let x = q as f32 / 255.0 * self.tni_max; tw[i].1 - tw[i].1 / (1f32 + x) };
+                            wub[i] = if q == 0 { 0.0 } else { let x = q as f32 / 255.0 * self.tni_max * scale; tw[i].1 - tw[i].1 / (1f32 + x) };
                         }
                         Some(_) => {}
                         None => {
@@ -477,10 +695,19 @@ impl RealIndex {
                     }
                     continue;
                 }
+                if check_tomb && lv.tomb.contains(d) {
+                    // replaced or deleted since the build: its current version (if any) is in the delta
+                    for i in e..m {
+                        if heads[i] == Some(d) {
+                            heads[i] = its[i].next();
+                        }
+                    }
+                    continue;
+                }
                 let mut score = 0f32;
                 for i in e..m {
                     if heads[i] == Some(d) {
-                        score += self.term_score(tw[i].1, tf_at(i, d), d);
+                        score += self.term_score(ni_tab, tw[i].1, tf_at(i, d), d);
                         heads[i] = its[i].next();
                     }
                 }
@@ -500,7 +727,7 @@ impl RealIndex {
                             heads[j] = its[j].next();
                         }
                         if heads[j] == Some(d) {
-                            score += self.term_score(tw[j].1, tf_at(j, d), d);
+                            score += self.term_score(ni_tab, tw[j].1, tf_at(j, d), d);
                         }
                     }
                 }
@@ -523,46 +750,34 @@ impl RealIndex {
         v
     }
 
-    /// Upper bound of one term's contribution in a docid window (global bound if no metadata).
-    #[inline]
-    fn term_block_ub(&self, t: &(f32, f32, u32), win: usize) -> f32 {
-        match self.bm_row.get(&t.2) {
-            Some(&r) => {
-                let q = self.bm[r][win];
-                if q == 0 {
-                    0.0
-                } else {
-                    let x = q as f32 / 255.0 * self.tni_max;
-                    t.1 - t.1 / (1f32 + x)
-                }
-            }
-            None => t.0,
-        }
-    }
-    fn block_bound(&self, tw: &[(f32, f32, u32)], win: usize) -> f32 {
-        tw.iter().map(|t| self.term_block_ub(t, win)).sum()
-    }
-
     // -------------------------------------------------------------- facets
     /// Exact brand counts over the full result (shards in parallel).
     pub fn facet_exact(&self, q: &[Clause]) -> Vec<(u32, u32)> {
-        let parts: Vec<HashMap<u32, u32>> = self
-            .ix
-            .shards
-            .par_iter()
-            .map(|sh| {
-                let mut f = HashMap::new();
-                for d in and_full(&sh.read(), q).iter() {
-                    *f.entry(self.ix.brand[d as usize]).or_default() += 1;
-                }
-                f
-            })
-            .collect();
+        let lv = self.live.read();
         let mut f: HashMap<u32, u32> = HashMap::new();
-        for p in parts {
-            for (b, c) in p {
-                *f.entry(b).or_default() += c;
+        if self.main_ok(&lv, q) {
+            let parts: Vec<HashMap<u32, u32>> = self
+                .ix
+                .shards
+                .par_iter()
+                .map(|sh| {
+                    let mut f = HashMap::new();
+                    let mut r = and_full(&sh.read(), q);
+                    r -= &lv.tomb;
+                    for d in r.iter() {
+                        *f.entry(self.ix.brand[d as usize]).or_default() += 1;
+                    }
+                    f
+                })
+                .collect();
+            for p in parts {
+                for (b, c) in p {
+                    *f.entry(b).or_default() += c;
+                }
             }
+        }
+        for key in lv.and(q).iter() {
+            *f.entry(lv.docs[&key].brand).or_default() += 1;
         }
         top20(f.into_iter())
     }
@@ -570,6 +785,11 @@ impl RealIndex {
     /// If the query has a head term: live exact counts for that term's offline candidate brands
     /// (|result ∩ brand| per shard). Otherwise the result is small: exact counting.
     pub fn facet_fast(&self, q: &[Clause]) -> Vec<(u32, u32)> {
+        let lv = self.live.read();
+        if !self.main_ok(&lv, q) {
+            drop(lv);
+            return self.facet_exact(q);
+        }
         let head = q
             .iter()
             .filter_map(|c| if let Clause::Term(w) = c { self.head_cands.get(w).map(|v| (self.df[*w as usize], v)) } else { None })
@@ -593,7 +813,8 @@ impl RealIndex {
                     .par_iter()
                     .enumerate()
                     .map(|(si, sh)| {
-                        let r = and_full(&sh.read(), q);
+                        let mut r = and_full(&sh.read(), q);
+                        r -= &lv.tomb;
                         cands
                             .iter()
                             .map(|&b| match self.brands[si].src(b) {
@@ -610,10 +831,206 @@ impl RealIndex {
                             .collect()
                     })
                     .collect();
-                top20(cands.iter().enumerate().map(|(i, &b)| (b, counts.iter().map(|c| c[i]).sum())))
+                let mut delta: HashMap<u32, u32> = HashMap::new();
+                for key in lv.and(q).iter() {
+                    *delta.entry(lv.docs[&key].brand).or_default() += 1;
+                }
+                top20(cands.iter().enumerate().map(|(i, &b)| (b, counts.iter().map(|c| c[i]).sum::<u32>() + delta.get(&b).copied().unwrap_or(0))))
             }
-            _ => self.facet_exact(q),
+            _ => {
+                drop(lv);
+                self.facet_exact(q)
+            }
         }
+    }
+
+    // -------------------------------------------------------------- live changes
+    /// Top-k by popularity (docid order; delta docs by key), replaced/deleted docs skipped.
+    pub fn topk_pop_live(&self, q: &[Clause], k: usize) -> Vec<u32> {
+        let lv = self.live.read();
+        let mut main = vec![];
+        if self.main_ok(&lv, q) {
+            let mut kk = k;
+            main = loop {
+                let ids = self.ix.topk_pop(q, kk);
+                let more = ids.len() == kk;
+                let f: Vec<u32> = ids.into_iter().filter(|d| !lv.tomb.contains(*d)).collect();
+                if f.len() >= k || !more {
+                    break f;
+                }
+                kk = kk * 2 + 64;
+            };
+        }
+        if lv.docs.is_empty() {
+            main.truncate(k);
+            return main;
+        }
+        main.extend(lv.and(q).iter().take(k));
+        main.sort_unstable();
+        main.truncate(k);
+        main
+    }
+    /// Top-k cheapest (price, key), replaced/deleted docs skipped.
+    pub fn topk_price_live(&self, q: &[Clause], k: usize) -> Vec<(u32, u32)> {
+        let lv = self.live.read();
+        let mut main = vec![];
+        if self.main_ok(&lv, q) {
+            let mut kk = k;
+            main = loop {
+                let v = self.ix.topk_price_k(q, kk);
+                let more = v.len() == kk;
+                let f: Vec<(u32, u32)> = v.into_iter().filter(|x| !lv.tomb.contains(x.1)).collect();
+                if f.len() >= k || !more {
+                    break f;
+                }
+                kk = kk * 2 + 64;
+            };
+        }
+        if !lv.docs.is_empty() {
+            main.extend(lv.and(q).iter().map(|key| (lv.docs[&key].price, key)));
+        }
+        main.sort_unstable();
+        main.truncate(k);
+        main
+    }
+    pub fn price_of(&self, d: u32) -> u32 {
+        let lv = self.live.read();
+        match lv.docs.get(&d) {
+            Some(dd) => dd.price,
+            None => self.ix.price[d as usize].load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+    /// For a delta doc: (static source JSON, price, stock, rocket).
+    pub fn delta_doc(&self, key: u32) -> Option<(String, u32, bool, bool)> {
+        let lv = self.live.read();
+        lv.docs.get(&key).map(|dd| (dd.src.clone(), dd.price, lv.stock.contains(key), lv.rocket.contains(key)))
+    }
+    pub fn is_live_doc(&self, key: u32) -> bool {
+        let lv = self.live.read();
+        lv.docs.contains_key(&key) || (key < self.ix.n && !lv.tomb.contains(key))
+    }
+    /// Term id for a word: built vocabulary, else words added since.
+    pub fn term_id(&self, vocab: &HashMap<String, u32>, w: &str) -> Option<u32> {
+        vocab.get(w).copied().or_else(|| self.live.read().terms.get(w).copied())
+    }
+    /// Stock/price updates; changes to delta docs go to the delta.
+    pub fn apply_attrs(&self, ups: &mut Vec<Update>) {
+        {
+            let any = { let lv = self.live.read(); !lv.docs.is_empty() && ups.iter().any(|u| lv.docs.contains_key(&u.doc())) };
+            if any {
+                let mut lv = self.live.write();
+                for u in ups.iter() {
+                    let d = u.doc();
+                    if !lv.docs.contains_key(&d) {
+                        continue;
+                    }
+                    match *u {
+                        Update::ToggleStock(_) => { if !lv.stock.remove(d) { lv.stock.insert(d); } }
+                        Update::SetStock(_, v) => { if v { lv.stock.insert(d); } else { lv.stock.remove(d); } }
+                        Update::Price(_, p) => {
+                            let (ob, nb) = (lv.bucket_of(lv.docs[&d].price), lv.bucket_of(p));
+                            lv.bucket[ob as usize].remove(d);
+                            lv.bucket[nb as usize].insert(d);
+                            lv.docs.get_mut(&d).unwrap().price = p;
+                        }
+                    }
+                }
+            }
+        }
+        // built docs (keys >= n exist only in the delta)
+        ups.retain(|u| u.doc() < self.ix.n);
+        self.ix.apply_batch(ups);
+    }
+    fn stat(lv: &mut Live, tokens: &[u32], sign: i64) {
+        let mut u = tokens.to_vec();
+        u.sort_unstable();
+        u.dedup();
+        for w in u {
+            *lv.df_adj.entry(w).or_default() += sign;
+        }
+        if !tokens.is_empty() {
+            lv.doc_count += sign;
+        }
+        lv.sum_ttf += sign * tokens.len() as i64;
+    }
+    fn restat(&self, lv: &mut Live) {
+        lv.avgdl = (lv.sum_ttf as f64 / lv.doc_count as f64) as f32;
+        for (i, x) in lv.norm_inv.iter_mut().enumerate() {
+            *x = 1f32 / (K1 * ((1f32 - B) + B * byte4_to_int(i as u8) as f32 / lv.avgdl));
+        }
+        // tf * norm_inv grows by at most avgdl_now / avgdl_build when avgdl grows (largest for long
+        // docs), and does not grow when it shrinks; 1e-4 covers float rounding
+        lv.scale = (lv.avgdl / self.avgdl).max(1.0) * 1.0001;
+    }
+    /// Remove whatever version of `key` is current (built or delta) from stats and structures.
+    fn remove_current(&self, lv: &mut Live, key: u32, built_tokens: &dyn Fn() -> Vec<u32>) {
+        if let Some(dd) = lv.docs.remove(&key) {
+            Self::stat(lv, &dd.tokens, -1);
+            let mut u = dd.tokens.clone();
+            u.sort_unstable();
+            u.dedup();
+            for w in u {
+                if let Some(b) = lv.post.get_mut(&w) {
+                    b.remove(key);
+                }
+                if let Some(l) = lv.imp.get_mut(&w) {
+                    if let Ok(i) = l.binary_search_by_key(&key, |x| x.0) {
+                        l.remove(i);
+                    }
+                }
+            }
+            lv.all.remove(key);
+            lv.stock.remove(key);
+            lv.rocket.remove(key);
+            if let Some(b) = lv.cat.get_mut(&dd.cat) {
+                b.remove(key);
+            }
+            let b = lv.bucket_of(dd.price);
+            lv.bucket[b as usize].remove(key);
+        } else if key < self.ix.n && !lv.tomb.contains(key) {
+            let t = built_tokens();
+            Self::stat(lv, &t, -1);
+            lv.tomb.insert(key);
+        }
+    }
+    /// Insert or replace a document (ES `index`). `built_tokens` returns the built version's tokens
+    /// when the doc is a built one being replaced for the first time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert(&self, key: u32, words: &[&str], vocab: &HashMap<String, u32>, cat: u32, brand: u32, price: u32, stock: bool, rocket: bool,
+                  src: String, built_tokens: &dyn Fn() -> Vec<u32>) {
+        let mut lv = self.live.write();
+        self.remove_current(&mut lv, key, built_tokens);
+        let tokens: Vec<u32> = words.iter().map(|w| match vocab.get(*w) {
+            Some(&id) => id,
+            None => {
+                let next = lv.n_main_vocab + lv.terms.len() as u32;
+                *lv.terms.entry(w.to_string()).or_insert(next)
+            }
+        }).collect();
+        Self::stat(&mut lv, &tokens, 1);
+        let norm = int_to_byte4(tokens.len() as u32);
+        let mut u = tokens.clone();
+        u.sort_unstable();
+        for g in u.chunk_by(|a, b| a == b) {
+            let w = g[0];
+            lv.post.entry(w).or_default().insert(key);
+            let l = lv.imp.entry(w).or_default();
+            let i = l.binary_search_by_key(&key, |x| x.0).unwrap_or_else(|i| i);
+            l.insert(i, (key, g.len().min(255) as u8, norm));
+        }
+        lv.all.insert(key);
+        if stock { lv.stock.insert(key); }
+        if rocket { lv.rocket.insert(key); }
+        lv.cat.entry(cat).or_default().insert(key);
+        let b = lv.bucket_of(price);
+        lv.bucket[b as usize].insert(key);
+        lv.docs.insert(key, DDoc { tokens, norm, cat, brand, price, src });
+        self.restat(&mut lv);
+    }
+    pub fn delete(&self, key: u32, built_tokens: &dyn Fn() -> Vec<u32>) {
+        let mut lv = self.live.write();
+        self.remove_current(&mut lv, key, built_tokens);
+        self.restat(&mut lv);
     }
 }
 
@@ -737,6 +1154,9 @@ pub mod snapshot {
 
     /// One file per shard (parallel) plus a meta file; `offset` is the next log offset to consume.
     pub fn save(ri: &RealIndex, vocab: &[String], dir: &std::path::Path, offset: u64, applied_seq: u64) -> std::io::Result<u64> {
+        if !ri.live.read().is_empty() {
+            return Err(std::io::Error::other("snapshot of an index with pending text changes is not supported (rebuild first)"));
+        }
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir)?;
         ri.ix.shards.par_iter().enumerate().try_for_each(|(i, sh)| -> std::io::Result<()> {
@@ -784,6 +1204,8 @@ pub mod snapshot {
             w_u32s(&mut w, v)?;
         }
         w_bytes(&mut w, vocab.join("\n").as_bytes())?;
+        w_u64(&mut w, ri.sum_ttf)?;
+        w_u32s(&mut w, &ri.ix.edges)?;
         w.into_inner()?.sync_all()?;
         Ok(std::fs::read_dir(dir)?.map(|e| e.unwrap().metadata().unwrap().len()).sum())
     }
@@ -839,10 +1261,18 @@ pub mod snapshot {
             brands.push(br);
             tf2.push(t2);
         }
-        let ix = Index { shards, shard_size: shard_size as u32, n: n as u32, brand, price, bucket };
+        let ix = Index { shards, shard_size: shard_size as u32, n: n as u32, brand, price, bucket, edges: crate::edges_global() };
+        // total title length: stored after the vocabulary (older snapshots: from avgdl, approximate)
+        let sum_ttf = r_u64(&mut r).unwrap_or((f32::from_bits(fl[0]) as f64 * doc_count as f64).round() as u64);
+        let mut ix = ix;
+        if let Ok(e) = r_u32s(&mut r) {
+            ix.edges = e;
+        }
+        let n_cat = ix.shards.first().map(|s| s.read().cat.len()).unwrap_or(0) as u32;
+        let live = RwLock::new(Live::new(doc_count as u32, sum_ttf, f32::from_bits(fl[0]), norm_inv, vocab.len() as u32, n_cat, ix.edges.clone()));
         let ri = RealIndex {
             ix, brands, norm, df, tfmax, maxtni, bm_row, bm, tni_max: f32::from_bits(fl[1]), tf2, doc_count: doc_count as u32,
-            avgdl: f32::from_bits(fl[0]), norm_inv, head_cands, n_brand: n_brand as usize, build_times: vec![],
+            avgdl: f32::from_bits(fl[0]), norm_inv, head_cands, n_brand: n_brand as usize, build_times: vec![], sum_ttf, live,
         };
         Ok((ri, vocab, offset, applied_seq))
     }

@@ -1,0 +1,5 @@
+  [ES merged] BM25+filters top-10 ES == ours: held-out 600/600 (ties aside 600), aimed at changed/new docs 600/600 (ties aside 600)
+  popularity top-10 ES == ours: held-out 900/900, aimed 600/600; price top-10: held-out 300/300, aimed 300/300
+  brand facet top-20 ES == ours exact: held-out 300/300, aimed 300/300; ours fast path: held-out 300/300, aimed 300/300
+  _source of hits (id, title, price, stock, cat) equal: 5995/5995; queries with a different hit count: 0/600
+after ES merge: ES 828 QPS p99 51.1 ms | ours (delta not folded) 1520 QPS p99 25.9 ms

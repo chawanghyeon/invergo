@@ -1,0 +1,12 @@
+ops: 294852 (150000 title changes of built docs, 100000 new docs, 25000 stock/price changes of new docs, 19852 deletes); changed or new docs alive at the end: 240601
+before changes, BM25+filters 16 clients (with _source): ES 940 QPS p99 51.3 ms | ours 1656 QPS p99 21.5 ms
+apply ES: 294852 ops in 13.2s (22283 ops/s), server 14.6 CPU s
+apply ours: 294852 ops in 21.3s (13830 ops/s), server 20.5 CPU s
+after changes, before ES merge: ES 802 QPS p99 52.5 ms | ours 839 QPS p99 41.8 ms
+  [ES not merged] BM25+filters top-10 ES == ours: held-out 92/600 (ties aside 99), aimed at changed/new docs 101/600 (ties aside 114)
+ES force merge 29.7s; ES docs "2978485" deleted "0"
+  [ES merged] BM25+filters top-10 ES == ours: held-out 600/600 (ties aside 600), aimed at changed/new docs 600/600 (ties aside 600)
+  popularity top-10 ES == ours: held-out 900/900, aimed 600/600; price top-10: held-out 300/300, aimed 300/300
+  brand facet top-20 ES == ours exact: held-out 300/300, aimed 300/300; ours fast path: held-out 300/300, aimed 300/300
+  _source of hits (id, title, price, stock, cat) equal: 6000/6000
+after ES merge: ES 901 QPS p99 46.9 ms | ours (delta not folded) 835 QPS p99 40.2 ms

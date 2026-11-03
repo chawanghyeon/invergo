@@ -1,0 +1,11 @@
+es    p50 1.61 p99 38.40 max 48.9 ms
+ours  p50 1.61 p99 6.77 max 10.9 ms
+top-10 identical 400/400 (same set 400)
+('= no-price value', 'pop', 'stock') ES max 2.8 ours max 1.4 ms (n=67)
+('= no-price value', 'price', 'stock') ES max 48.9 ours max 1.5 ms (n=33)
+('just below it', 'pop', '-') ES max 3.2 ours max 3.6 ms (n=67)
+('just below it', 'price', '-') ES max 2.2 ours max 4.7 ms (n=33)
+('narrow anywhere', 'pop', '-') ES max 2.4 ours max 4.3 ms (n=66)
+('narrow anywhere', 'price', '-') ES max 2.2 ours max 6.5 ms (n=34)
+('ordinary range', 'pop', 'stock') ES max 3.7 ours max 1.1 ms (n=66)
+('ordinary range', 'price', 'stock') ES max 7.3 ours max 10.9 ms (n=34)

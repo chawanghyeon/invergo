@@ -1778,6 +1778,284 @@ fn volload(path: &str) {
     println!("vol: {n} docs in {:.1}s", t.elapsed().as_secs_f64());
 }
 
+// ------------------------------------------------------------------ text changes and new products
+fn pid_cpu(pid: &str) -> Option<f64> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let f: Vec<&str> = s.rsplit(')').next()?.split_whitespace().collect();
+    Some((f[11].parse::<f64>().ok()? + f[12].parse::<f64>().ok()?) / 100.0)
+}
+fn qps16(base: &str, bodies: &[Value], secs: u64) -> (f64, f64) {
+    let stop = AtomicBool::new(false);
+    let done = AtomicU64::new(0);
+    let lats = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..16).map(|t| {
+            let (stop, done) = (&stop, &done);
+            s.spawn(move || {
+                let a = agent();
+                let mut l = Vec::new();
+                let mut j = t * 97;
+                while !stop.load(Relaxed) {
+                    let t1 = Instant::now();
+                    post_to(&a, base, "/real/_search", &bodies[j % bodies.len()].to_string(), "application/json");
+                    l.push(t1.elapsed().as_secs_f64() * 1e3);
+                    done.fetch_add(1, Relaxed);
+                    j += 1;
+                }
+                l
+            })
+        }).collect();
+        std::thread::sleep(Duration::from_secs(secs));
+        stop.store(true, Relaxed);
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect::<Vec<f64>>()
+    });
+    let (_, p99, _) = stats(lats);
+    (done.load(Relaxed) as f64 / secs as f64, p99)
+}
+fn hits_of(r: &Value) -> Vec<(String, f64)> {
+    r["hits"]["hits"].as_array().map(|a| a.iter().map(|h| (h["_id"].as_str().unwrap().to_string(), h["_score"].as_f64().unwrap_or(0.0))).collect()).unwrap_or_default()
+}
+/// Top-10 equal: same ids in order and scores within 1e-4 (relative); `tie_ok` also accepts a
+/// different order among docs whose scores are equal.
+fn same_top(a: &[(String, f64)], b: &[(String, f64)]) -> (bool, bool) {
+    let close = |x: f64, y: f64| (x - y).abs() <= 1e-4 * y.abs().max(1.0);
+    let exact = a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.0 == y.0 && close(x.1, y.1));
+    let tie_ok = exact || (a.len() == b.len() && a.iter().zip(b).all(|(x, y)| close(x.1, y.1)) && {
+        let last = a.last().map(|x| x.1).unwrap_or(0.0);
+        let above = |v: &[(String, f64)]| { let mut s: Vec<&String> = v.iter().filter(|x| !close(x.1, last)).map(|x| &x.0).collect(); s.sort(); s.into_iter().cloned().collect::<Vec<_>>() };
+        above(a) == above(b)
+    });
+    (exact, tie_ok)
+}
+fn facet_of(r: &Value) -> Vec<(String, u64)> {
+    r["aggregations"].as_object().and_then(|m| m.values().next()).and_then(|x| x["buckets"].as_array()).map(|a| a.iter().map(|x| (x["key"].as_str().unwrap().to_string(), x["doc_count"].as_u64().unwrap())).collect()).unwrap_or_default()
+}
+/// Facet top-20 equal up to the order of brands with equal counts (and which of them make the cut).
+fn same_facet(a: &[(String, u64)], b: &[(String, u64)]) -> bool {
+    if a.len() != b.len() || a.iter().zip(b).any(|(x, y)| x.1 != y.1) {
+        return false;
+    }
+    let last = a.last().map(|x| x.1).unwrap_or(0);
+    let above = |v: &[(String, u64)]| { let mut s: Vec<&String> = v.iter().filter(|x| x.1 > last).map(|x| &x.0).collect(); s.sort(); s.into_iter().cloned().collect::<Vec<_>>() };
+    above(a) == above(b)
+}
+
+fn textcheck(path: &str) {
+    let rc = realcat::load(path);
+    let n = rc.n as u64;
+    let sc: u64 = std::env::var("TEXT_SCALE").ok().and_then(|x| x.parse().ok()).unwrap_or(1);
+    let (nu, ni, na, nd, ndn) = (30_000 * sc, 20_000 * sc, 5_000 * sc, 3_000 * sc, 1_000 * sc);
+    let ours = "http://127.0.0.1:9400";
+    let word = |w: u32| rc.vocab[w as usize].clone();
+    // a new title: drop a word, add a word from another title, sometimes a word never seen before
+    let mutate = |base: &[u32], h: u64| -> Vec<String> {
+        let mut v: Vec<String> = base.iter().map(|&w| word(w)).collect();
+        if v.len() > 1 && h % 3 == 0 {
+            v.remove(((h >> 8) % v.len() as u64) as usize);
+        }
+        let other = &rc.tokens[((h >> 16) % n) as usize];
+        if !other.is_empty() {
+            v.push(word(other[((h >> 40) % other.len() as u64) as usize]));
+        }
+        if h % 10 < 3 {
+            v.push(format!("zq{}", (h >> 24) % 3000));
+        }
+        v
+    };
+    let doc = |key: u64, cat: u32, brand: u32, price: u64, stock: bool, rocket: bool, words: &[String]| {
+        json!({"pop": key, "cat": cat.to_string(), "brand": brand.to_string(), "price": price, "stock": stock, "rocket": rocket, "title_tok": words.join(" ")}).to_string()
+    };
+    // final state of every changed/new doc: key -> (words, cat, alive)
+    let mut fin: std::collections::BTreeMap<u64, (Vec<String>, u32, bool)> = Default::default();
+    let mut ops: Vec<String> = Vec::new(); // one NDJSON op (1 or 2 lines) each
+    for i in 0..nu.max(ni) {
+        if i < nu {
+            let h = mix((21u64 << 40) + i);
+            let d = h % n;
+            let base = fin.get(&d).map(|x| x.0.clone());
+            let words = match base {
+                Some(b) => { let ids: Vec<u32> = vec![]; let mut v = b; let m = mutate(&ids, h); v.extend(m); v }
+                None => mutate(&rc.tokens[d as usize], h),
+            };
+            let price = (rc.price[d as usize] as u64 * (80 + (h >> 33) % 41) / 100).max(1);
+            ops.push(format!("{{\"index\":{{\"_id\":\"{d}\"}}}}\n{}\n", doc(d, rc.cat[d as usize], rc.brand[d as usize], price, (h >> 50) % 10 != 0, unif(d, 7) < 0.4, &words)));
+            fin.insert(d, (words, rc.cat[d as usize], true));
+        }
+        if i < ni {
+            let h = mix((22u64 << 40) + i);
+            let (key, b) = (n + i, (h % n) as usize);
+            let words = mutate(&rc.tokens[b], h);
+            let price = (rc.price[b] as u64 * (80 + (h >> 33) % 41) / 100).max(1);
+            ops.push(format!("{{\"index\":{{\"_id\":\"{key}\"}}}}\n{}\n", doc(key, rc.cat[b], rc.brand[b], price, (h >> 50) % 10 != 0, (h >> 54) % 10 < 4, &words)));
+            fin.insert(key, (words, rc.cat[b], true));
+        }
+    }
+    for i in 0..na {
+        let h = mix((24u64 << 40) + i);
+        let key = n + h % ni;
+        if h & 1 == 0 {
+            ops.push(format!("{{\"update\":{{\"_id\":\"{key}\"}}}}\n{{\"doc\":{{\"stock\":{}}}}}\n", (h >> 8) % 2 == 0));
+        } else {
+            ops.push(format!("{{\"update\":{{\"_id\":\"{key}\"}}}}\n{{\"doc\":{{\"price\":{}}}}}\n", 100 + (h >> 8) % 500_000));
+        }
+    }
+    let mut deleted = std::collections::HashSet::new();
+    for i in 0..nd + ndn {
+        let h = mix((23u64 << 40) + i);
+        let key = if i < nd { h % n } else { n + h % ni };
+        if deleted.insert(key) {
+            ops.push(format!("{{\"delete\":{{\"_id\":\"{key}\"}}}}\n"));
+            fin.entry(key).or_insert((vec![], 0, true)).2 = false;
+        }
+    }
+    let changed_alive: Vec<(u64, &(Vec<String>, u32, bool))> = fin.iter().filter(|x| x.1 .2 && !x.1 .0.is_empty()).map(|(k, v)| (*k, v)).collect();
+    println!("ops: {} ({nu} title changes of built docs, {ni} new docs, {na} stock/price changes of new docs, {} deletes); changed or new docs alive at the end: {}",
+             ops.len(), deleted.len(), changed_alive.len());
+
+    // queries: held-out BM25 / popularity / facets, plus queries aimed at the changed and new docs
+    let wls = workloads(&rc);
+    let mut bm: Vec<Value> = wls[1].bm25.iter().map(|(ws, f)| rq_bm25f(&rc, ws, f)).collect();
+    let mut pop: Vec<Value> = wls[1].filters.iter().map(|q| rq_pop(&rc, q)).collect();
+    let mut price: Vec<Value> = wls[1].facet.iter().take(300).map(|q| rq_price(&rc, q)).collect();
+    let mut facet: Vec<Value> = wls[1].facet.iter().map(|q| rq_facet_exact(&rc, q)).collect();
+    let (n_bm0, n_pop0, n_price0, n_facet0) = (bm.len(), pop.len(), price.len(), facet.len());
+    let mut targ_src: Vec<Value> = Vec::new();
+    for j in 0..600usize {
+        let (_, (words, cat, _)) = changed_alive[(mix((25u64 << 40) + j as u64) % changed_alive.len() as u64) as usize];
+        let h = mix((26u64 << 40) + j as u64);
+        let w1 = &words[(h % words.len() as u64) as usize];
+        let w2 = &words[((h >> 20) % words.len() as u64) as usize];
+        let zq = words.iter().find(|w| w.starts_with("zq")).unwrap_or(w1);
+        let mut f = vec![json!({"term": {"stock": true}})];
+        if j % 2 == 1 {
+            f.push(json!({"term": {"cat": cat.to_string()}}));
+        }
+        bm.push(json!({"size": K, "track_total_hits": false, "query": {"bool": {"must": {"match": {"title_tok": format!("{w1} {w2}")}}, "filter": f}}}));
+        targ_src.push(json!({"size": K, "track_total_hits": false, "query": {"bool": {"must": {"match": {"title_tok": format!("{zq} {w2}")}}, "filter": [{"term": {"stock": true}}]}}}));
+        let tf = vec![json!({"term": {"title_tok": zq}}), json!({"term": {"stock": true}})];
+        pop.push(json!({"size": K, "track_total_hits": false, "_source": false, "sort": [{"pop": "asc"}], "query": {"bool": {"filter": tf}}}));
+        if j < 300 {
+            price.push(json!({"size": K, "track_total_hits": false, "_source": false, "sort": [{"price": "asc"}], "query": {"bool": {"filter": [{"term": {"title_tok": w1}}, {"term": {"stock": true}}]}}}));
+            facet.push(json!({"size": 0, "track_total_hits": false, "query": {"bool": {"filter": [{"term": {"title_tok": w1}}, {"term": {"stock": true}}]}},
+                              "aggs": {"b": {"terms": {"field": "brand", "size": 20}}}}));
+        }
+    }
+    let bm_src: Vec<Value> = bm[..n_bm0].iter().cloned().map(with_source).collect();
+
+    let a = agent();
+    let (es_pid, our_pid) = (std::env::var("ES_PID").unwrap_or_default(), std::env::var("OUR_PID").unwrap_or_default());
+    let cmp_bm = |label: &str| {
+        let (mut ex, mut tie) = ((0, 0), (0, 0));
+        for (i, b) in bm.iter().enumerate() {
+            let (e, o) = (hits_of(&post_to(&a, ES, "/real/_search", &b.to_string(), "application/json")), hits_of(&post_to(&a, ours, "/real/_search", &b.to_string(), "application/json")));
+            let (x, t) = same_top(&e, &o);
+            let slot = if i < n_bm0 { 0 } else { 1 };
+            if x { if slot == 0 { ex.0 += 1 } else { ex.1 += 1 } }
+            if t { if slot == 0 { tie.0 += 1 } else { tie.1 += 1 } }
+        }
+        println!("  [{label}] BM25+filters top-10 ES == ours: held-out {}/{n_bm0} (ties aside {}), aimed at changed/new docs {}/{} (ties aside {})", ex.0, tie.0, ex.1, bm.len() - n_bm0, tie.1);
+    };
+    let compare_only = std::env::var("TEXT_COMPARE_ONLY").is_ok();
+    if !compare_only {
+    let (qe0, pe0) = qps16(ES, &bm_src, 10);
+    let (qo0, po0) = qps16(ours, &bm_src, 10);
+    println!("before changes, BM25+filters 16 clients (with _source): ES {qe0:.0} QPS p99 {pe0:.1} ms | ours {qo0:.0} QPS p99 {po0:.1} ms");
+
+    // apply: same bulks, same order, one client per system
+    for (name, base) in [("ES", ES), ("ours", ours)] {
+        let pid = if name == "ES" { &es_pid } else { &our_pid };
+        let (c0, t) = (pid_cpu(pid), Instant::now());
+        // FOLD=1: start a fold of our engine halfway through and keep writing while it runs
+        let fold_at = if name == "ours" && std::env::var("FOLD").is_ok() { ops.len() / 2000 } else { usize::MAX };
+        let mut fold_h = None;
+        for (ci, chunk) in ops.chunks(1000).enumerate() {
+            if ci == fold_at {
+                fold_h = Some(std::thread::spawn(|| {
+                    let a = ureq::AgentBuilder::new().timeout(Duration::from_secs(900)).build();
+                    let t = Instant::now();
+                    let r: Value = a.post("http://127.0.0.1:9400/_fold").send_string("").unwrap().into_json().unwrap();
+                    (r, t.elapsed().as_secs_f64())
+                }));
+            }
+            let r = post_to(&a, base, "/real/_bulk", &chunk.concat(), "application/x-ndjson");
+            if r["errors"].as_bool() == Some(true) {
+                let bad: Vec<&Value> = r["items"].as_array().unwrap().iter().filter(|x| x.as_object().unwrap().values().next().unwrap().get("error").is_some()).take(3).collect();
+                panic!("{name} bulk errors: {bad:?}");
+            }
+        }
+        let wall = t.elapsed().as_secs_f64();
+        let cpu = pid_cpu(pid).zip(c0).map(|(a, b)| format!("{:.1} CPU s", a - b)).unwrap_or("?".into());
+        println!("apply {name}: {} ops in {wall:.1}s ({:.0} ops/s), server {cpu}", ops.len(), ops.len() as f64 / wall);
+        if let Some(h) = fold_h {
+            let (r, secs) = h.join().unwrap();
+            println!("  fold started after {} of {} ops, writes continued; fold returned after {secs:.1}s: {r}", fold_at * 1000, ops.len());
+        }
+    }
+    post_to(&a, ES, "/real/_refresh", "", "application/json");
+    let (qe1, pe1) = qps16(ES, &bm_src, 10);
+    let (qo1, po1) = qps16(ours, &bm_src, 10);
+    println!("after changes, before ES merge: ES {qe1:.0} QPS p99 {pe1:.1} ms | ours {qo1:.0} QPS p99 {po1:.1} ms");
+    cmp_bm("ES not merged");
+    }
+    // Lucene keeps deleted docs in BM25 statistics until merged away, and ES retains soft-deleted
+    // docs (retention leases) through a merge: drop the retention so the merge yields exact stats
+    let _ = a.put(&format!("{ES}/real/_settings")).set("Content-Type", "application/json")
+        .send_string(&json!({"index": {"soft_deletes.retention_lease.period": "0s"}}).to_string());
+    std::thread::sleep(Duration::from_secs(5));
+    let t = Instant::now();
+    post_to(&a, ES, "/real/_flush", "", "application/json");
+    post_to(&a, ES, "/real/_forcemerge?max_num_segments=1", "", "application/json");
+    post_to(&a, ES, "/real/_refresh", "", "application/json");
+    let st: Value = a.get(&format!("{ES}/_cat/indices/real?format=json&h=docs.count,docs.deleted")).call().unwrap().into_json().unwrap();
+    println!("ES force merge {:.1}s; ES docs {} deleted {}", t.elapsed().as_secs_f64(), st[0]["docs.count"], st[0]["docs.deleted"]);
+    cmp_bm("ES merged");
+    let ids = |r: &Value| r["hits"]["hits"].as_array().unwrap().iter().map(|h| h["_id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let mut c = [0usize; 4];
+    for (i, b) in pop.iter().enumerate() {
+        if ids(&post_to(&a, ES, "/real/_search", &b.to_string(), "application/json")) == ids(&post_to(&a, ours, "/real/_search", &b.to_string(), "application/json")) {
+            c[(i >= n_pop0) as usize] += 1;
+        }
+    }
+    for (i, b) in price.iter().enumerate() {
+        // price ties: compare (price) sequences and ids
+        let (e, o) = (post_to(&a, ES, "/real/_search", &b.to_string(), "application/json"), post_to(&a, ours, "/real/_search", &b.to_string(), "application/json"));
+        if ids(&e) == ids(&o) {
+            c[2 + (i >= n_price0) as usize] += 1;
+        }
+    }
+    println!("  popularity top-10 ES == ours: held-out {}/{n_pop0}, aimed {}/{}; price top-10: held-out {}/{n_price0}, aimed {}/{}",
+             c[0], c[1], pop.len() - n_pop0, c[2], c[3], price.len() - n_price0);
+    let (mut fe, mut ff) = ([0usize; 2], [0usize; 2]);
+    for (i, b) in facet.iter().enumerate() {
+        let e = facet_of(&post_to(&a, ES, "/real/_search", &b.to_string(), "application/json"));
+        let ox = facet_of(&post_to(&a, ours, "/real/_search?exact=1", &b.to_string(), "application/json"));
+        let of = facet_of(&post_to(&a, ours, "/real/_search", &b.to_string(), "application/json"));
+        let s = (i >= n_facet0) as usize;
+        if same_facet(&e, &ox) { fe[s] += 1; }
+        if same_facet(&e, &of) { ff[s] += 1; }
+    }
+    println!("  brand facet top-20 ES == ours exact: held-out {}/{n_facet0}, aimed {}/{}; ours fast path: held-out {}/{n_facet0}, aimed {}/{}",
+             fe[0], fe[1], facet.len() - n_facet0, ff[0], ff[1], facet.len() - n_facet0);
+    // served documents: the hits' _source of queries on changed/new docs
+    let (mut same_src, mut tot, mut len_diff) = (0, 0, 0);
+    for b in &targ_src {
+        let (e, o) = (post_to(&a, ES, "/real/_search", &b.to_string(), "application/json"), post_to(&a, ours, "/real/_search", &b.to_string(), "application/json"));
+        let (le, lo) = (e["hits"]["hits"].as_array().unwrap().len(), o["hits"]["hits"].as_array().unwrap().len());
+        if le != lo {
+            len_diff += 1;
+            if len_diff <= 3 { println!("    hit count differs: ES {le} ours {lo} for {b}"); }
+        }
+        for (x, y) in e["hits"]["hits"].as_array().unwrap().iter().zip(o["hits"]["hits"].as_array().unwrap()) {
+            tot += 1;
+            let f = |h: &Value| (h["_id"].clone(), h["_source"]["title_tok"].clone(), h["_source"]["price"].clone(), h["_source"]["stock"].clone(), h["_source"]["cat"].clone());
+            if f(x) == f(y) { same_src += 1; }
+        }
+    }
+    println!("  _source of hits (id, title, price, stock, cat) equal: {same_src}/{tot}; queries with a different hit count: {len_diff}/{}", targ_src.len());
+    let (qe2, pe2) = qps16(ES, &bm_src, 10);
+    let (qo2, po2) = qps16(ours, &bm_src, 10);
+    println!("after ES merge: ES {qe2:.0} QPS p99 {pe2:.1} ms | ours (delta not folded) {qo2:.0} QPS p99 {po2:.1} ms");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = args.get(2).cloned().unwrap_or_default();
@@ -1804,6 +2082,7 @@ fn main() {
         Some("prodbench") => prodbench(&arg, &args[3]),
         Some("mixed") => mixed(&arg, &args[3], args[4].parse().unwrap(), args[5].parse().unwrap(), &args[6]),
         Some("mixedcheck") => mixedcheck(&arg),
+        Some("textcheck") => textcheck(&arg),
         Some("volload") => volload(&arg),
         _ => panic!("usage: es load|bench|ours N | realload|realbench|realours FILE"),
     }

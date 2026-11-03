@@ -1,0 +1,9 @@
+build postings + attribute bitmaps: 5.87s
+build BM25 stats (norms, df, tf, max impact) incl. block-max: 5.70s
+build   of which block-max windows: 2.46s
+build facet candidate brands (offline): 2.57s
+build total: 14.14s
+doc store: 496 MB on disk in 9.9s (offsets in RAM 22 MB)
+WAL replay: 63 MB, 294852 ops in 16.9s (17416 ops/s)
+VmHWM: 1337876, VmRSS: 1188488
+serving ES-compatible subset on 127.0.0.1:9400 (4 workers)
