@@ -186,39 +186,39 @@ pub mod snap {
     use super::*;
     use std::io::{Read, Write};
 
-    fn w_u32s(w: &mut impl Write, v: &[u32]) -> std::io::Result<()> {
+    pub fn w_u32s(w: &mut impl Write, v: &[u32]) -> std::io::Result<()> {
         w.write_all(&(v.len() as u64).to_le_bytes())?;
         w.write_all(unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 4) })
     }
-    fn r_u32s(r: &mut impl Read) -> std::io::Result<Vec<u32>> {
+    pub fn r_u32s(r: &mut impl Read) -> std::io::Result<Vec<u32>> {
         let n = r_u64(r)? as usize;
         let mut v = vec![0u32; n];
         r.read_exact(unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, n * 4) })?;
         Ok(v)
     }
-    fn w_bytes(w: &mut impl Write, v: &[u8]) -> std::io::Result<()> {
+    pub fn w_bytes(w: &mut impl Write, v: &[u8]) -> std::io::Result<()> {
         w.write_all(&(v.len() as u64).to_le_bytes())?;
         w.write_all(v)
     }
-    fn r_bytes(r: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    pub fn r_bytes(r: &mut impl Read) -> std::io::Result<Vec<u8>> {
         let n = r_u64(r)? as usize;
         let mut v = vec![0u8; n];
         r.read_exact(&mut v)?;
         Ok(v)
     }
-    fn r_u64(r: &mut impl Read) -> std::io::Result<u64> {
+    pub fn r_u64(r: &mut impl Read) -> std::io::Result<u64> {
         let mut b = [0u8; 8];
         r.read_exact(&mut b)?;
         Ok(u64::from_le_bytes(b))
     }
-    fn w_bms(w: &mut impl Write, v: &[RoaringBitmap]) -> std::io::Result<()> {
+    pub fn w_bms(w: &mut impl Write, v: &[RoaringBitmap]) -> std::io::Result<()> {
         w.write_all(&(v.len() as u64).to_le_bytes())?;
         for b in v {
             b.serialize_into(&mut *w)?;
         }
         Ok(())
     }
-    fn r_bms(r: &mut impl Read) -> std::io::Result<Vec<RoaringBitmap>> {
+    pub fn r_bms(r: &mut impl Read) -> std::io::Result<Vec<RoaringBitmap>> {
         let n = r_u64(r)? as usize;
         (0..n).map(|_| RoaringBitmap::deserialize_unchecked_from(&mut *r)).collect()
     }

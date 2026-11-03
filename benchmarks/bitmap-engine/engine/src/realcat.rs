@@ -712,3 +712,138 @@ pub fn oos_stock(rc: &RealCat, d: usize) -> bool {
     let p = if (d as u64) < rc.n as u64 / 10 { 0.5 } else if rc.cat[d] % 5 == 0 { 0.6 } else { 0.05 };
     unif(d as u64, 333) >= p
 }
+
+// ------------------------------------------------------------------ snapshot of a node (index + vocabulary + log offset)
+pub mod snapshot {
+    use super::*;
+    use crate::snap::*;
+    use std::io::{Read, Write};
+
+    fn w_u64(w: &mut impl Write, x: u64) -> std::io::Result<()> {
+        w.write_all(&x.to_le_bytes())
+    }
+    fn w_terms(w: &mut impl Write, t: &Terms) -> std::io::Result<()> {
+        w_u32s(w, &t.off)?;
+        w_bytes(w, &t.arena)?;
+        w_u32s(w, &t.dense_keys)?;
+        w_bms(w, &t.dense)
+    }
+    fn r_terms(r: &mut impl Read) -> std::io::Result<Terms> {
+        Ok(Terms { off: r_u32s(r)?, arena: r_bytes(r)?, dense_keys: r_u32s(r)?, dense: r_bms(r)? })
+    }
+    fn f32s(v: &[f32]) -> Vec<u32> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// One file per shard (parallel) plus a meta file; `offset` is the next log offset to consume.
+    pub fn save(ri: &RealIndex, vocab: &[String], dir: &std::path::Path, offset: u64, applied_seq: u64) -> std::io::Result<u64> {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+        ri.ix.shards.par_iter().enumerate().try_for_each(|(i, sh)| -> std::io::Result<()> {
+            let mut w = std::io::BufWriter::with_capacity(1 << 22, std::fs::File::create(dir.join(format!("shard{i:03}.bin")))?);
+            write_shard(&sh.read(), &mut w)?;
+            w_terms(&mut w, &ri.brands[i])?;
+            // tf >= 2 lists of this shard
+            let mut keys: Vec<&u32> = ri.tf2[i].keys().collect();
+            keys.sort();
+            w_u64(&mut w, keys.len() as u64)?;
+            for k in keys {
+                let (d, t) = &ri.tf2[i][k];
+                w_u64(&mut w, *k as u64)?;
+                w_u32s(&mut w, d)?;
+                w_bytes(&mut w, t)?;
+            }
+            w.into_inner()?.sync_all()
+        })?;
+        let mut w = std::io::BufWriter::with_capacity(1 << 22, std::fs::File::create(dir.join("meta.bin"))?);
+        for x in [offset, applied_seq, ri.ix.n as u64, ri.ix.shard_size as u64, ri.ix.shards.len() as u64, ri.doc_count as u64, ri.n_brand as u64] {
+            w_u64(&mut w, x)?;
+        }
+        w_u32s(&mut w, &[ri.avgdl.to_bits(), ri.tni_max.to_bits()])?;
+        w_u32s(&mut w, &ri.ix.brand)?;
+        w_u32s(&mut w, &ri.ix.price.iter().map(|p| p.load(Relaxed)).collect::<Vec<_>>())?;
+        w_bytes(&mut w, &ri.ix.bucket.iter().map(|b| b.load(Relaxed)).collect::<Vec<_>>())?;
+        w_bytes(&mut w, &ri.norm)?;
+        w_u32s(&mut w, &ri.df)?;
+        w_bytes(&mut w, &ri.tfmax)?;
+        w_u32s(&mut w, &f32s(&ri.maxtni))?;
+        w_u32s(&mut w, &f32s(&ri.norm_inv))?;
+        let mut rows: Vec<(&u32, &usize)> = ri.bm_row.iter().collect();
+        rows.sort();
+        w_u32s(&mut w, &rows.iter().map(|x| *x.0).collect::<Vec<_>>())?;
+        w_u32s(&mut w, &rows.iter().map(|x| *x.1 as u32).collect::<Vec<_>>())?;
+        w_u64(&mut w, ri.bm.len() as u64)?;
+        for r in &ri.bm {
+            w_bytes(&mut w, r)?;
+        }
+        let mut hc: Vec<(&u32, &Vec<u32>)> = ri.head_cands.iter().collect();
+        hc.sort();
+        w_u64(&mut w, hc.len() as u64)?;
+        for (k, v) in hc {
+            w_u64(&mut w, *k as u64)?;
+            w_u32s(&mut w, v)?;
+        }
+        w_bytes(&mut w, vocab.join("\n").as_bytes())?;
+        w.into_inner()?.sync_all()?;
+        Ok(std::fs::read_dir(dir)?.map(|e| e.unwrap().metadata().unwrap().len()).sum())
+    }
+
+    /// Returns (index, vocabulary, next offset, applied batch seq).
+    pub fn load(dir: &std::path::Path) -> std::io::Result<(RealIndex, Vec<String>, u64, u64)> {
+        let mut r = std::io::BufReader::with_capacity(1 << 22, std::fs::File::open(dir.join("meta.bin"))?);
+        let mut h = [0u64; 7];
+        for x in h.iter_mut() {
+            *x = r_u64(&mut r)?;
+        }
+        let [offset, applied_seq, n, shard_size, s, doc_count, n_brand] = h;
+        let fl = r_u32s(&mut r)?;
+        let brand = r_u32s(&mut r)?;
+        let price: Vec<AtomicU32> = r_u32s(&mut r)?.into_iter().map(AtomicU32::new).collect();
+        let bucket: Vec<AtomicU8> = r_bytes(&mut r)?.into_iter().map(AtomicU8::new).collect();
+        let norm = r_bytes(&mut r)?;
+        let df = r_u32s(&mut r)?;
+        let tfmax = r_bytes(&mut r)?;
+        let maxtni: Vec<f32> = r_u32s(&mut r)?.into_iter().map(f32::from_bits).collect();
+        let ni: Vec<f32> = r_u32s(&mut r)?.into_iter().map(f32::from_bits).collect();
+        let mut norm_inv = [0f32; 256];
+        norm_inv.copy_from_slice(&ni);
+        let (rk, rv) = (r_u32s(&mut r)?, r_u32s(&mut r)?);
+        let bm_row: HashMap<u32, usize> = rk.into_iter().zip(rv.into_iter().map(|x| x as usize)).collect();
+        let nb = r_u64(&mut r)? as usize;
+        let bm: Vec<Vec<u8>> = (0..nb).map(|_| r_bytes(&mut r)).collect::<std::io::Result<_>>()?;
+        let nh = r_u64(&mut r)? as usize;
+        let mut head_cands = HashMap::with_capacity(nh);
+        for _ in 0..nh {
+            let k = r_u64(&mut r)? as u32;
+            head_cands.insert(k, r_u32s(&mut r)?);
+        }
+        let vocab: Vec<String> = String::from_utf8(r_bytes(&mut r)?).unwrap().split('\n').map(String::from).collect();
+        let parts: Vec<(Shard, Terms, HashMap<u32, (Vec<u32>, Vec<u8>)>)> = (0..s as usize)
+            .into_par_iter()
+            .map(|i| -> std::io::Result<_> {
+                let mut r = std::io::BufReader::with_capacity(1 << 22, std::fs::File::open(dir.join(format!("shard{i:03}.bin")))?);
+                let sh = read_shard(&mut r)?;
+                let br = r_terms(&mut r)?;
+                let nk = r_u64(&mut r)? as usize;
+                let mut t2 = HashMap::with_capacity(nk);
+                for _ in 0..nk {
+                    let k = r_u64(&mut r)? as u32;
+                    t2.insert(k, (r_u32s(&mut r)?, r_bytes(&mut r)?));
+                }
+                Ok((sh, br, t2))
+            })
+            .collect::<std::io::Result<_>>()?;
+        let (mut shards, mut brands, mut tf2) = (Vec::new(), Vec::new(), Vec::new());
+        for (sh, br, t2) in parts {
+            shards.push(RwLock::new(sh));
+            brands.push(br);
+            tf2.push(t2);
+        }
+        let ix = Index { shards, shard_size: shard_size as u32, n: n as u32, brand, price, bucket };
+        let ri = RealIndex {
+            ix, brands, norm, df, tfmax, maxtni, bm_row, bm, tni_max: f32::from_bits(fl[1]), tf2, doc_count: doc_count as u32,
+            avgdl: f32::from_bits(fl[0]), norm_inv, head_cands, n_brand: n_brand as usize, build_times: vec![],
+        };
+        Ok((ri, vocab, offset, applied_seq))
+    }
+}

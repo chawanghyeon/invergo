@@ -1,0 +1,14 @@
+  Kafka acks (acks=all, idempotent): p50 3.1 p99 17.8 max 9957 ms (worst at 20.0s); delivery errors 0
+  event: 10.1s kill -9 Kafka broker 3 (partition leader, pid 6131)
+  event: 30.1s restart Kafka broker 3
+  queries before kill (0-10 s)           1253 QPS, p50 1.86 p99 17.98 max 71.9 ms, failed 0
+  queries one replica down until rejoin   1268 QPS, p50 1.77 p99 20.66 max 80.5 ms, failed 0
+  queries after rejoin                   1157 QPS, p50 2.05 p99 19.42 max 195.3 ms, failed 0
+  router: 0 retries on another replica, 0 requests failed on every replica
+  writes: 5002 batches x 1000 = 5002000 updates in 100 s (50020 updates/s), fsync per batch
+  replication lag node :9501: p50 0.0 p99 63.5 max 267.6 ms (batches behind p99 12, max 73)
+  replication lag node :9502: p50 0.0 p99 45.3 max 104.5 ms (batches behind p99 10, max 28)
+  replication lag node :9503: p50 0.0 p99 33.6 max 104.2 ms (batches behind p99 2, max 14)
+  final state node :9501: applied batch 5002 of 5002, digest 859d4230e85666ed == expected (duplicate batches skipped 0, gaps 0)
+  final state node :9502: applied batch 5002 of 5002, digest 859d4230e85666ed == expected (duplicate batches skipped 0, gaps 0)
+  final state node :9503: applied batch 5002 of 5002, digest 859d4230e85666ed == expected (duplicate batches skipped 0, gaps 0)

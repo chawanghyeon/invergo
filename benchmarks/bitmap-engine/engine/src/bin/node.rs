@@ -35,6 +35,13 @@ struct Node {
     applied_seq: AtomicU64,
     applied_ts: AtomicU64,
     _wal_lock: Mutex<()>,
+    vocab_list: Vec<String>,
+    next_offset: AtomicU64, // Kafka: next offset to consume
+    dups: AtomicU64,
+    gaps: AtomicU64,
+    snap_req: Mutex<Option<std::path::PathBuf>>,
+    snap_result: Mutex<Option<Value>>,
+    paused: AtomicBool, // ingestion paused (stand-in for a node cut off from the log)
 }
 
 fn static_source(rc: &RealCat, d: usize) -> String {
@@ -165,6 +172,93 @@ impl Node {
         h
     }
 
+    /// Apply one batch (header line + update pairs) unless it is a duplicate; count gaps.
+    fn apply_batch_text(&self, text: &[u8]) {
+        let mut lines = text.split(|&c| c == b'\n').filter(|l| !l.is_empty());
+        let hdr: Value = serde_json::from_slice(lines.next().unwrap()).unwrap();
+        let seq = hdr["_batch"].as_u64().unwrap();
+        let prev = self.applied_seq.load(Relaxed);
+        if seq <= prev {
+            self.dups.fetch_add(1, Relaxed);
+            return;
+        }
+        if seq != prev + 1 {
+            self.gaps.fetch_add(1, Relaxed);
+        }
+        let mut ups = Vec::new();
+        while let (Some(a), Some(b)) = (lines.next(), lines.next()) {
+            let a: Value = serde_json::from_slice(a).unwrap();
+            let b: Value = serde_json::from_slice(b).unwrap();
+            let d: u32 = a["update"]["_id"].as_str().unwrap().parse().unwrap();
+            if d < self.lo || d >= self.hi {
+                continue;
+            }
+            if let Some(v) = b["doc"].get("stock") {
+                ups.push(Update::SetStock(d, v.as_bool().unwrap()));
+            }
+            if let Some(v) = b["doc"].get("price") {
+                ups.push(Update::Price(d, v.as_u64().unwrap() as u32));
+            }
+        }
+        self.ri.ix.apply_batch(&mut ups);
+        self.applied_seq.store(seq, Relaxed);
+        self.applied_ts.store(hdr["ts"].as_u64().unwrap(), Relaxed);
+    }
+
+    /// Take a snapshot between batches if one was requested (consistent with next_offset).
+    fn maybe_snapshot(&self) {
+        let req = self.snap_req.lock().take();
+        if let Some(dir) = req {
+            let t = Instant::now();
+            let bytes = bitmap_engine::realcat::snapshot::save(&self.ri, &self.vocab_list, &dir, self.next_offset.load(Relaxed), self.applied_seq.load(Relaxed)).unwrap();
+            *self.snap_result.lock() = Some(json!({"bytes": bytes, "secs": t.elapsed().as_secs_f64(),
+                "offset": self.next_offset.load(Relaxed), "applied_seq": self.applied_seq.load(Relaxed)}));
+        }
+    }
+
+    /// Consume partition 0 of the topic from `start` offset; ready once the startup high
+    /// watermark is reached.
+    fn tail_kafka(&self, brokers: &str, topic: &str, start: u64) {
+        use rdkafka::consumer::{BaseConsumer, Consumer};
+        use rdkafka::Message;
+        let c: BaseConsumer = rdkafka::ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("group.id", format!("node-{}-{}", self.lo, std::process::id()))
+            .set("enable.auto.commit", "false")
+            .set("fetch.wait.max.ms", "5")
+            .set("fetch.min.bytes", "1")
+            .create()
+            .unwrap();
+        let mut tpl = rdkafka::TopicPartitionList::new();
+        tpl.add_partition_offset(topic, 0, rdkafka::Offset::Offset(start as i64)).unwrap();
+        c.assign(&tpl).unwrap();
+        self.next_offset.store(start, Relaxed);
+        let hw = c.fetch_watermarks(topic, 0, Duration::from_secs(10)).map(|w| w.1 as u64).unwrap_or(0);
+        if start >= hw {
+            self.ready.store(true, Relaxed);
+        }
+        loop {
+            self.maybe_snapshot();
+            if self.paused.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            match c.poll(Duration::from_millis(20)) {
+                Some(Ok(m)) => {
+                    if let Some(p) = m.payload() {
+                        self.apply_batch_text(p);
+                    }
+                    self.next_offset.store(m.offset() as u64 + 1, Relaxed);
+                    if m.offset() as u64 + 1 >= hw {
+                        self.ready.store(true, Relaxed);
+                    }
+                }
+                Some(Err(e)) => eprintln!("kafka: {e}"),
+                None => {}
+            }
+        }
+    }
+
     /// Follow the update log from the start; apply complete batches, keep only this node's docs.
     fn tail(&self, log: &std::path::Path) {
         while !log.exists() {
@@ -239,13 +333,24 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (path, dir, port, log) = (&a[1], std::path::PathBuf::from(&a[2]), &a[3], std::path::PathBuf::from(&a[4]));
     let t0 = Instant::now();
-    let rc = load(path);
-    let (lo, hi) = (a[5].parse::<u32>().unwrap(), a.get(6).map(|x| x.parse::<u32>().unwrap()).unwrap_or(rc.n).min(rc.n));
-    let ri = build_part(&rc, 16, lo, hi);
+    let snap_load = std::env::var("SNAP_LOAD").ok().map(std::path::PathBuf::from);
+    let (ri, vocab_list, lo, hi, start_offset, start_seq, rc) = if let Some(sd) = &snap_load {
+        let (ri, vocab, off, seq) = bitmap_engine::realcat::snapshot::load(sd).unwrap();
+        let (lo, hi) = (a[5].parse::<u32>().unwrap(), a.get(6).map(|x| x.parse::<u32>().unwrap()).unwrap_or(ri.ix.n).min(ri.ix.n));
+        println!("node :{port} loaded snapshot {} (offset {off}, batch {seq}) in {:.1}s", sd.display(), t0.elapsed().as_secs_f64());
+        (ri, vocab, lo, hi, off, seq, None)
+    } else {
+        let rc = load(path);
+        let (lo, hi) = (a[5].parse::<u32>().unwrap(), a.get(6).map(|x| x.parse::<u32>().unwrap()).unwrap_or(rc.n).min(rc.n));
+        let ri = build_part(&rc, 16, lo, hi);
+        let v = rc.vocab.clone();
+        (ri, v, lo, hi, 0, 0, Some(rc))
+    };
     // shared document store: written once, offsets cached next to it
     std::fs::create_dir_all(&dir).unwrap();
     let (dp, op) = (dir.join("docs.json"), dir.join("docs.off"));
     if !op.exists() {
+        let rc = rc.as_ref().expect("document store missing and no catalog loaded");
         let mut off = vec![0u64];
         let mut w = std::io::BufWriter::new(std::fs::File::create(&dp).unwrap());
         for d in 0..rc.n as usize {
@@ -258,7 +363,7 @@ fn main() {
     }
     let ob = std::fs::read(&op).unwrap();
     let off: Vec<u64> = ob.chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
-    let vocab: HashMap<String, u32> = rc.vocab.iter().enumerate().map(|(i, w)| (w.clone(), i as u32)).collect();
+    let vocab: HashMap<String, u32> = vocab_list.iter().enumerate().map(|(i, w)| (w.clone(), i as u32)).collect();
     drop(rc);
     let node = Node {
         ri,
@@ -268,9 +373,16 @@ fn main() {
         lo,
         hi,
         ready: AtomicBool::new(false),
-        applied_seq: AtomicU64::new(0),
+        applied_seq: AtomicU64::new(start_seq),
         applied_ts: AtomicU64::new(0),
         _wal_lock: Mutex::new(()),
+        vocab_list,
+        next_offset: AtomicU64::new(start_offset),
+        dups: AtomicU64::new(0),
+        gaps: AtomicU64::new(0),
+        snap_req: Mutex::new(None),
+        snap_result: Mutex::new(None),
+        paused: AtomicBool::new(false),
     };
     println!("node :{port} docids [{lo}, {hi}) built in {:.1}s, {}", t0.elapsed().as_secs_f64(), mem_status());
 
@@ -281,7 +393,15 @@ fn main() {
     sock.listen(1024).unwrap();
     let server = tiny_http::Server::from_listener(std::net::TcpListener::from(sock), None).unwrap();
     std::thread::scope(|s| {
-        s.spawn(|| node.tail(&log));
+        s.spawn(|| {
+            let l = log.to_string_lossy().to_string();
+            if let Some(rest) = l.strip_prefix("kafka:") {
+                let (brokers, topic) = rest.rsplit_once('/').unwrap();
+                node.tail_kafka(brokers, topic, start_offset);
+            } else {
+                node.tail(&log);
+            }
+        });
         s.spawn(|| {
             while !node.ready.load(Relaxed) {
                 std::thread::sleep(Duration::from_millis(10));
@@ -300,7 +420,22 @@ fn main() {
                 let url = req.url().to_string();
                 let out = if url.starts_with("/_status") {
                     json!({"ready": node.ready.load(Relaxed), "applied_seq": node.applied_seq.load(Relaxed),
-                           "applied_ts": node.applied_ts.load(Relaxed), "lo": node.lo, "hi": node.hi})
+                           "applied_ts": node.applied_ts.load(Relaxed), "lo": node.lo, "hi": node.hi,
+                           "next_offset": node.next_offset.load(Relaxed), "dups": node.dups.load(Relaxed), "gaps": node.gaps.load(Relaxed)})
+                } else if url.starts_with("/_pause") {
+                    node.paused.store(url.contains("on=1"), Relaxed);
+                    json!({"paused": node.paused.load(Relaxed)})
+                } else if url.starts_with("/_snapshot") {
+                    // the tail thread takes it between batches; wait for the result
+                    let dir = std::path::PathBuf::from(body.trim());
+                    *node.snap_result.lock() = None;
+                    *node.snap_req.lock() = Some(dir);
+                    loop {
+                        if let Some(v) = node.snap_result.lock().take() {
+                            break v;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                 } else if url.starts_with("/_digest") {
                     json!({"digest": format!("{:016x}", node.digest()), "applied_seq": node.applied_seq.load(Relaxed)})
                 } else if url.starts_with("/_brandcounts") {

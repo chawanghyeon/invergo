@@ -1,0 +1,25 @@
+N4 6 replicas, overlapping faults, writes 50k updates/s, 60 s, router timeout 200 ms hedge 0 ms, staleness-aware on
+   10-30 s blackhole :9702 | 15 s kill -9 :9504, 35 s restart from snapshot | 20-45 s :9705 1 ms + 2% chunks stalled 300 ms | 20-40 s :9506 stops applying the log
+   event 10.0s
+   event 15.0s
+   event 20.0s
+   event 30.0s
+   event 35.0s
+   event 40.0s
+   event 45.0s
+  [multi-fault] hedged 0 / retried 289
+    healthy (0-10 s)              940 QPS, p50   5.23 p99   45.72 max    101.7 ms, failed    0, reads from a replica >10 batches behind 6 (0.1%), served-lag p99 3 max 12 batches
+    1 fault (10-15 s)             673 QPS, p50   5.84 p99  206.18 max    237.0 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 3 max 4 batches
+    2 faults (15-20 s)            656 QPS, p50   5.98 p99  207.85 max    247.1 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 4 max 4 batches
+    4 faults (20-30 s)            689 QPS, p50   5.74 p99  207.09 max    238.8 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 9 batches
+    3 faults (30-35 s)           1071 QPS, p50   4.55 p99   34.57 max    230.7 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 2 batches
+    restart+2 (35-45 s)           759 QPS, p50   5.94 p99   53.72 max    235.5 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 4 max 4 batches
+    recovered (45-60 s)           923 QPS, p50   4.89 p99   45.13 max     83.6 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 3 max 5 batches
+  converged in 4.5s after writes stopped: applied [Some(24005), Some(24005), Some(24005), Some(24005), Some(24005), Some(24005)]
+  node :9501: applied 24005 dups 0 gaps 0 digest "e1d624cc703ac1e2"
+  node :9502: applied 24005 dups 0 gaps 0 digest "e1d624cc703ac1e2"
+  node :9503: applied 24005 dups 0 gaps 0 digest "e1d624cc703ac1e2"
+  node :9504: applied 24005 dups 0 gaps 0 digest "e1d624cc703ac1e2"
+  node :9505: applied 24005 dups 0 gaps 0 digest "e1d624cc703ac1e2"
+  node :9506: applied 24005 dups 0 gaps 0 digest "e1d624cc703ac1e2"
+  all digests equal: true

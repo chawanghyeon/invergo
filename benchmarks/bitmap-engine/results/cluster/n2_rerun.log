@@ -1,0 +1,13 @@
+N2 one replica silently partitioned (blackhole) from 10 s to 25 s, writes 50k/s, 40 s per router config
+  [timeout 10000 ms, hedge off] hedged 0 / retried 0
+    before (0-10 s)              1154 QPS, p50   4.61 p99   31.67 max    144.4 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 3 batches
+    partitioned (10-25 s)          45 QPS, p50   5.26 p99   25.62 max     42.9 ms, failed    8, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 1 max 1 batches
+    healed (25-40 s)              688 QPS, p50   4.63 p99   33.92 max     63.1 ms, failed    8, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 3 batches
+  [timeout 200 ms, hedge off] hedged 0 / retried 160
+    before (0-10 s)              1111 QPS, p50   4.74 p99   32.37 max     63.5 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 7 batches
+    partitioned (10-25 s)         664 QPS, p50   6.53 p99  208.27 max    242.9 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 3 batches
+    healed (25-40 s)             1090 QPS, p50   4.83 p99   33.18 max     59.7 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 3 batches
+  [timeout 2000 ms, hedge 20 ms] hedged 1282 / retried 0
+    before (0-10 s)               677 QPS, p50  10.45 p99   36.23 max     61.8 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 3 batches
+    partitioned (10-25 s)         580 QPS, p50  12.50 p99   39.58 max     84.4 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 1 max 2 batches
+    healed (25-40 s)              598 QPS, p50  11.88 p99   40.22 max     62.2 ms, failed    0, reads from a replica >10 batches behind 0 (0.0%), served-lag p99 2 max 3 batches
