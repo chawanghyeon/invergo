@@ -1,0 +1,9 @@
+  queries whole run                      1539 QPS, p50 7.29 p99 39.68 max 10144.8 ms, failed 0
+  router: 0 retries on another replica, 0 requests failed on every replica
+  writes: 1502 batches x 1000 = 1502000 updates in 30 s (50067 updates/s), fsync per batch
+  replication lag node :9501: p50 0.0 p99 19.9 max 29.6 ms (batches behind p99 1, max 1)
+  replication lag node :9502: p50 0.0 p99 17.0 max 19.5 ms (batches behind p99 1, max 1)
+  replication lag node :9503: p50 0.0 p99 10.6 max 15.3 ms (batches behind p99 0, max 0)
+  final state node :9501: applied batch 1502 of 1502, digest 9cdf956344ef6267 == expected
+  final state node :9502: applied batch 1502 of 1502, digest 9cdf956344ef6267 == expected
+  final state node :9503: applied batch 1502 of 1502, digest 9cdf956344ef6267 == expected

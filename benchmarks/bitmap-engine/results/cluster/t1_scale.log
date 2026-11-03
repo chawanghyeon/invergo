@@ -1,0 +1,7 @@
+T1 replica scaling (each node pinned to its own core; client on core 0; 16 client threads, 15 s)
+  BM25 (+stock / +cat&stock)     1 node(s):     636 QPS, p50 23.75 p99 51.58 ms, client core 9%, errors 0
+  BM25 (+stock / +cat&stock)     2 node(s):    1185 QPS, p50 12.07 p99 43.40 ms, client core 15%, errors 0
+  BM25 (+stock / +cat&stock)     3 node(s):    1735 QPS, p50 6.55 p99 39.07 ms, client core 20%, errors 0
+  filters top-10 by popularity   1 node(s):    7329 QPS, p50 2.02 p99 4.92 ms, client core 64%, errors 0
+  filters top-10 by popularity   2 node(s):   12923 QPS, p50 1.11 p99 3.89 ms, client core 96%, errors 0
+  filters top-10 by popularity   3 node(s):   13128 QPS, p50 1.14 p99 3.10 ms, client core 99%, errors 0

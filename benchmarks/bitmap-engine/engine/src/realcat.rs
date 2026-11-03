@@ -130,6 +130,12 @@ pub struct RealIndex {
 }
 
 pub fn build(rc: &RealCat, s: u32) -> RealIndex {
+    build_part(rc, s, 0, rc.n)
+}
+/// Index only docids in [keep_lo, keep_hi) (a shard node of a partitioned cluster), while BM25
+/// statistics, block-max bounds and facet candidates are computed over the whole catalog, so a
+/// partition scores exactly like a single node and partition results can be merged.
+pub fn build_part(rc: &RealCat, s: u32, keep_lo: u32, keep_hi: u32) -> RealIndex {
     let t_all = std::time::Instant::now();
     let n = rc.n;
     let shard_size = n.div_ceil(s);
@@ -138,6 +144,7 @@ pub fn build(rc: &RealCat, s: u32) -> RealIndex {
     let mut tf2 = Vec::new();
     for si in 0..s {
         let (lo, hi) = (si * shard_size, ((si + 1) * shard_size).min(n));
+        let (lo, hi) = (lo.max(keep_lo).min(hi), hi.min(keep_hi).max(lo.max(keep_lo).min(hi)));
         let pairs = |f: &(dyn Fn(usize) -> u32 + Sync)| -> Vec<u64> {
             (lo..hi).into_par_iter().map(|d| ((f(d as usize) as u64) << 32) | d as u64).collect()
         };

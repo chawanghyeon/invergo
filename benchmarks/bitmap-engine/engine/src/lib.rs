@@ -398,7 +398,7 @@ impl Index {
 
     /// Apply a batch (e.g. one Kafka poll) taking each shard's write lock once.
     pub fn apply_batch(&self, batch: &mut [Update]) {
-        batch.sort_unstable_by_key(|u| u.doc());
+        batch.sort_by_key(|u| u.doc()); // stable: several updates of one doc keep log order
         for group in batch.chunk_by(|a, b| a.doc() / self.shard_size == b.doc() / self.shard_size) {
             let mut sh = self.shards[(group[0].doc() / self.shard_size) as usize].write();
             for u in group {

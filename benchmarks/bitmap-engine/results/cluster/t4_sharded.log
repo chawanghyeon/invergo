@@ -1,0 +1,11 @@
+T4 partitions by popularity range [9601, 9602, 9603] vs a single full node :9599
+  filters top-10 identical to single node: tiered 1800/1800, scatter-gather 1800/1800
+  BM25 top-10 (ids and scores) identical to single node: 1200/1200
+  brand facet top-20 counts (two-phase) identical to single node: 200/200
+  tiered: partitions queried per filter query: 1 -> 1473, 2 -> 93, 3 -> 234
+  cost, 16 client threads x 15 s, 3 nodes either way:
+    BM25, 3 replicas (round robin)              1659 QPS, p50 6.92 p99 39.15 ms, client core 20%, errors 0
+    BM25, 3 partitions (scatter-gather)         1177 QPS, p50 11.55 p99 48.05 ms, client core 39%, errors 0
+    filters, 3 replicas                        12653 QPS, p50 1.15 p99 3.68 ms, client core 98%, errors 0
+    filters, 3 partitions (tiered)              8293 QPS, p50 1.74 p99 4.85 ms, client core 80%, errors 0
+    filters, 3 partitions (scatter-gather)      4402 QPS, p50 3.09 p99 12.07 ms, client core 98%, errors 0

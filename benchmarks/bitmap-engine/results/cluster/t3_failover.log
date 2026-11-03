@@ -1,0 +1,19 @@
+kill target pid 3194
+  event: 10.0s kill -9 node :9502 (pid 3194)
+  event: 25.0s restart node :9502
+  event: 73.0s node :9502 ready again (build + log replay 48.0s)
+  queries before kill (0-10 s)           1611 QPS, p50 6.81 p99 36.27 max 84.0 ms, failed 0
+  queries one replica down until rejoin    830 QPS, p50 20.71 p99 52.42 max 10190.4 ms, failed 0
+  queries after rejoin                   1448 QPS, p50 8.13 p99 44.01 max 70.5 ms, failed 0
+  router: 15 retries on another replica, 0 requests failed on every replica
+  writes: 5005 batches x 1000 = 5005000 updates in 100 s (50050 updates/s), fsync per batch
+  replication lag node :9501: p50 0.0 p99 13.5 max 22.3 ms (batches behind p99 1, max 1)
+  replication lag node :9502: p50 0.0 p99 11.4 max 14.8 ms (batches behind p99 1, max 1)
+  replication lag node :9503: p50 0.0 p99 15.4 max 20.5 ms (batches behind p99 0, max 0)
+  final state node :9501: applied batch 5005 of 5005, digest a3e1dd56343cfa51 == expected
+  final state node :9502: applied batch 5005 of 5005, digest a3e1dd56343cfa51 == expected
+  final state node :9503: applied batch 5005 of 5005, digest a3e1dd56343cfa51 == expected
+node :9502 docids [0, 2898337) built in 44.4s, VmHWM: 1269240, VmRSS: 1079216
+node :9502 ready (caught up with the log) after 48.0s
+
+[exited with code 0]
