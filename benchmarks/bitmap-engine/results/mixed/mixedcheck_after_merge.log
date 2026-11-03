@@ -1,0 +1,2 @@
+after identical updates: BM25+filters top-10 ES == ours ids 600/600, ids+scores 600/600; same score sequence 600/600, of which same docs above the 10th score 600; filters by popularity 900/900
+split pipeline (BM25 top 100 then stock from vol) == ours: 600/600 (fewer than 10 in stock: 0)

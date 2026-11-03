@@ -1,0 +1,92 @@
+[ours (WAL fsync per bulk) | no updates] target 0 updates/s, 30 s
+  updates applied 0/s (bulk of 1000: p50 0.0 p99 0.0 max 0 ms)
+  BM25+filters 16 clients: 1534 QPS, p50 9.62 p99 23.16 max 51 ms
+  update visible in search after ack: p50 8 p99 16 max 19 ms (76 probes)
+  server CPU 98% of 3 cores | disk write 0.0 MB/s, read 0.0 MB/s | client core 24%
+[ours (WAL fsync per bulk) | 10k updates/s, no queries] target 10000 updates/s, 30 s
+  updates applied 9768/s (bulk of 1000: p50 3.3 p99 105.4 max 121 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 1 p99 4 max 10 ms (76 probes)
+  server CPU 2% of 3 cores | disk write 0.5 MB/s, read 0.0 MB/s | client core 9%
+[ours (WAL fsync per bulk) | 50k updates/s, no queries] target 50000 updates/s, 30 s
+  updates applied 49463/s (bulk of 1000: p50 3.3 p99 8.5 max 18 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 1 p99 5 max 6 ms (76 probes)
+  server CPU 4% of 3 cores | disk write 2.7 MB/s, read 0.0 MB/s | client core 10%
+[ES A default (refresh 1s, translog fsync per request) | no updates] target 0 updates/s, 30 s
+  updates applied 0/s (bulk of 1000: p50 0.0 p99 0.0 max 0 ms)
+  BM25+filters 16 clients: 739 QPS, p50 19.62 p99 55.01 max 239 ms
+  update visible in search after ack: p50 712 p99 1017 max 1017 ms (35 probes)
+  server CPU 98% of 3 cores | disk write 0.2 MB/s, read 0.0 MB/s | client core 20%
+  ES: merge time 0.0 s, indexing time 0.0 s, refreshes 30, segments now 23
+[ES A default (refresh 1s, translog fsync per request) | 10k updates/s, no queries] target 10000 updates/s, 30 s
+  updates applied 9763/s (bulk of 1000: p50 153.9 p99 545.2 max 913 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 879 p99 1451 max 1451 ms (29 probes)
+  server CPU 50% of 3 cores | disk write 7.3 MB/s, read 0.0 MB/s | client core 14%
+  ES: merge time 3.5 s, indexing time 8.4 s, refreshes 25, segments now 25
+[ES A default (refresh 1s, translog fsync per request) | 50k updates/s, no queries] target 50000 updates/s, 30 s
+  updates applied 17035/s (bulk of 1000: p50 179.9 p99 722.5 max 1356 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 943 p99 1590 max 1590 ms (25 probes)
+  server CPU 90% of 3 cores | disk write 14.1 MB/s, read 0.0 MB/s | client core 18%
+  ES: merge time 12.5 s, indexing time 21.9 s, refreshes 22, segments now 35
+[ES B async translog (5s), refresh 1s | no updates] target 0 updates/s, 30 s
+  updates applied 0/s (bulk of 1000: p50 0.0 p99 0.0 max 0 ms)
+  BM25+filters 16 clients: 618 QPS, p50 23.77 p99 63.47 max 170 ms
+  update visible in search after ack: p50 716 p99 1065 max 1065 ms (35 probes)
+  server CPU 98% of 3 cores | disk write 0.5 MB/s, read 0.0 MB/s | client core 17%
+  ES: merge time 1.0 s, indexing time 0.0 s, refreshes 30, segments now 23
+[ES B async translog (5s), refresh 1s | 10k updates/s, no queries] target 10000 updates/s, 30 s
+  updates applied 9863/s (bulk of 1000: p50 161.4 p99 578.6 max 702 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 977 p99 1958 max 1958 ms (26 probes)
+  server CPU 56% of 3 cores | disk write 8.7 MB/s, read 0.0 MB/s | client core 15%
+  ES: merge time 7.8 s, indexing time 10.2 s, refreshes 22, segments now 21
+[ES B async translog (5s), refresh 1s | 50k updates/s, no queries] target 50000 updates/s, 30 s
+  updates applied 14156/s (bulk of 1000: p50 223.1 p99 843.5 max 1474 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 1058 p99 1989 max 1989 ms (21 probes)
+  server CPU 91% of 3 cores | disk write 16.4 MB/s, read 0.0 MB/s | client core 14%
+  ES: merge time 20.1 s, indexing time 18.8 s, refreshes 22, segments now 31
+[ES C async translog, refresh 5s | no updates] target 0 updates/s, 30 s
+  updates applied 0/s (bulk of 1000: p50 0.0 p99 0.0 max 0 ms)
+  BM25+filters 16 clients: 674 QPS, p50 21.61 p99 57.64 max 207 ms
+  update visible in search after ack: p50 4726 p99 4946 max 4946 ms (6 probes)
+  server CPU 98% of 3 cores | disk write 0.3 MB/s, read 0.0 MB/s | client core 18%
+  ES: merge time 1.0 s, indexing time 0.0 s, refreshes 7, segments now 16
+[ES C async translog, refresh 5s | 10k updates/s, no queries] target 10000 updates/s, 30 s
+  updates applied 9764/s (bulk of 1000: p50 153.3 p99 628.4 max 900 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 5120 p99 5611 max 5611 ms (5 probes)
+  server CPU 52% of 3 cores | disk write 6.1 MB/s, read 0.0 MB/s | client core 15%
+  ES: merge time 3.0 s, indexing time 9.1 s, refreshes 6, segments now 18
+[ES C async translog, refresh 5s | 50k updates/s, no queries] target 50000 updates/s, 30 s
+  updates applied 17154/s (bulk of 1000: p50 169.8 p99 811.5 max 1209 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms
+  update visible in search after ack: p50 5798 p99 5962 max 5962 ms (5 probes)
+  server CPU 91% of 3 cores | disk write 11.8 MB/s, read 0.0 MB/s | client core 18%
+  ES: merge time 11.4 s, indexing time 19.6 s, refreshes 6, segments now 25
+[ES D split index (stock/price in vol, mget), defaults | no updates] target 0 updates/s, 30 s
+  updates applied 0/s (bulk of 1000: p50 0.0 p99 0.0 max 0 ms)
+  BM25+filters 16 clients: 343 QPS, p50 44.89 p99 90.57 max 157 ms, fewer than 10 in stock among top 100: 0
+  update visible in search after ack: p50 6 p99 31 max 33 ms (95 probes)
+  server CPU 98% of 3 cores | disk write 1.4 MB/s, read 0.0 MB/s | client core 40%
+  ES: merge time 4.8 s, indexing time 0.0 s, refreshes 29, segments now 9
+[ES D split index (stock/price in vol, mget), defaults | 10k updates/s, no queries] target 10000 updates/s, 30 s
+  updates applied 9960/s (bulk of 1000: p50 100.9 p99 329.1 max 380 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms, fewer than 10 in stock among top 100: 0
+  update visible in search after ack: p50 1 p99 9 max 12 ms (94 probes)
+  server CPU 33% of 3 cores | disk write 7.3 MB/s, read 0.0 MB/s | client core 13%
+  ES: merge time 5.7 s, indexing time 3.3 s, refreshes 25, segments now 11
+[ES D split index (stock/price in vol, mget), defaults | 50k updates/s, no queries] target 50000 updates/s, 30 s
+  updates applied 32306/s (bulk of 1000: p50 91.3 p99 476.3 max 947 ms)
+  BM25+filters 0 clients: 0 QPS, p50 0.00 p99 0.00 max 0 ms, fewer than 10 in stock among top 100: 0
+  update visible in search after ack: p50 1 p99 27 max 172 ms (82 probes)
+  server CPU 85% of 3 cores | disk write 5.0 MB/s, read 0.0 MB/s | client core 29%
+  ES: merge time 5.5 s, indexing time 13.6 s, refreshes 25, segments now 10
+ours: sent 564 catch-up batches; all at [2016, 1995, 1981, 2012]
+es: sent 0 catch-up batches; all at [2016, 1995, 1981, 2012]
+split: sent 1083 catch-up batches; all at [2016, 1995, 1981, 2012]
+after identical updates: BM25+filters top-10 ES == ours ids 255/600, ids+scores 26/600; same score sequence 63/600, of which same docs above the 10th score 63; filters by popularity 900/900
+split pipeline (BM25 top 100 then stock from vol) == ours: 255/600 (fewer than 10 in stock: 0)

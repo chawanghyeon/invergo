@@ -1,0 +1,93 @@
+thread 'main' (1262) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+[ours (WAL fsync per bulk) | 10k updates/s] target 10000 updates/s, 60 s
+  updates applied 9949/s (bulk of 1000: p50 14.8 p99 32.0 max 36 ms)
+  BM25+filters 16 clients: 1450 QPS, p50 10.24 p99 24.90 max 102 ms
+  update visible in search after ack: p50 10 p99 18 max 20 ms (80 probes)
+  server CPU 98% of 3 cores | disk write 0.5 MB/s, read 0.0 MB/s | client core 33%
+[ours (WAL fsync per bulk) | 50k updates/s] target 50000 updates/s, 60 s
+  updates applied 49739/s (bulk of 1000: p50 14.7 p99 36.9 max 142 ms)
+  BM25+filters 16 clients: 1415 QPS, p50 10.31 p99 26.82 max 149 ms
+  update visible in search after ack: p50 10 p99 20 max 25 ms (80 probes)
+  server CPU 94% of 3 cores | disk write 2.7 MB/s, read 0.0 MB/s | client core 31%
+thread 'main' (1444) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1462) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1479) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+[ES A default (refresh 1s, translog fsync per request) | 10k updates/s] target 10000 updates/s, 60 s
+  updates applied 9038/s (bulk of 1000: p50 404.8 p99 886.3 max 1388 ms)
+  BM25+filters 16 clients: 312 QPS, p50 43.46 p99 191.41 max 1292 ms
+  update visible in search after ack: p50 976 p99 2311 max 2311 ms (42 probes)
+  server CPU 97% of 3 cores | disk write 7.8 MB/s, read 0.0 MB/s | client core 16%
+  ES: merge time 18.8 s, indexing time 42.8 s, refreshes 44, segments now 24
+[ES A default (refresh 1s, translog fsync per request) | 50k updates/s] target 50000 updates/s, 60 s
+  updates applied 8594/s (bulk of 1000: p50 418.5 p99 1042.8 max 1394 ms)
+  BM25+filters 16 clients: 292 QPS, p50 45.85 p99 204.25 max 1547 ms
+  update visible in search after ack: p50 1062 p99 2797 max 2797 ms (39 probes)
+  server CPU 97% of 3 cores | disk write 9.4 MB/s, read 0.0 MB/s | client core 15%
+  ES: merge time 35.0 s, indexing time 44.2 s, refreshes 41, segments now 22
+thread 'main' (1578) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1593) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1606) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+[ES B async translog (5s), refresh 1s | 10k updates/s] target 10000 updates/s, 60 s
+  updates applied 8754/s (bulk of 1000: p50 414.2 p99 989.8 max 1564 ms)
+  BM25+filters 16 clients: 309 QPS, p50 43.77 p99 187.95 max 1432 ms
+  update visible in search after ack: p50 968 p99 2232 max 2232 ms (47 probes)
+  server CPU 96% of 3 cores | disk write 8.3 MB/s, read 0.0 MB/s | client core 16%
+  ES: merge time 22.9 s, indexing time 45.7 s, refreshes 43, segments now 28
+[ES B async translog (5s), refresh 1s | 50k updates/s] target 50000 updates/s, 60 s
+  updates applied 8742/s (bulk of 1000: p50 424.4 p99 925.9 max 1267 ms)
+  BM25+filters 16 clients: 277 QPS, p50 49.09 p99 203.56 max 1519 ms
+  update visible in search after ack: p50 998 p99 2106 max 2106 ms (41 probes)
+  server CPU 97% of 3 cores | disk write 8.2 MB/s, read 0.0 MB/s | client core 15%
+  ES: merge time 18.8 s, indexing time 45.9 s, refreshes 41, segments now 38
+thread 'main' (1705) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1719) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1735) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+[ES C async translog, refresh 5s | 10k updates/s] target 10000 updates/s, 60 s
+  updates applied 8954/s (bulk of 1000: p50 392.0 p99 1564.2 max 2223 ms)
+  BM25+filters 16 clients: 318 QPS, p50 42.76 p99 206.01 max 1141 ms
+  update visible in search after ack: p50 6062 p99 6545 max 6545 ms (9 probes)
+  server CPU 97% of 3 cores | disk write 7.2 MB/s, read 0.0 MB/s | client core 17%
+  ES: merge time 22.1 s, indexing time 43.2 s, refreshes 11, segments now 23
+[ES C async translog, refresh 5s | 50k updates/s] target 50000 updates/s, 60 s
+  updates applied 9429/s (bulk of 1000: p50 379.5 p99 885.7 max 1920 ms)
+  BM25+filters 16 clients: 326 QPS, p50 41.75 p99 206.27 max 1372 ms
+  update visible in search after ack: p50 6076 p99 6394 max 6394 ms (9 probes)
+  server CPU 97% of 3 cores | disk write 14.5 MB/s, read 0.0 MB/s | client core 17%
+  ES: merge time 40.0 s, indexing time 43.7 s, refreshes 11, segments now 19
+thread 'main' (1829) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1845) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1863) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+[ES D split index (stock/price in vol, mget), defaults | 10k updates/s] target 10000 updates/s, 60 s
+  updates applied 9840/s (bulk of 1000: p50 253.6 p99 692.6 max 841 ms)
+  BM25+filters 16 clients: 314 QPS, p50 46.04 p99 132.28 max 964 ms, fewer than 10 in stock among top 100: 0
+  update visible in search after ack: p50 9 p99 41 max 65 ms (151 probes)
+  server CPU 97% of 3 cores | disk write 2.2 MB/s, read 0.0 MB/s | client core 48%
+  ES: merge time 6.8 s, indexing time 18.3 s, refreshes 52, segments now 8
+[ES D split index (stock/price in vol, mget), defaults | 50k updates/s] target 50000 updates/s, 60 s
+  updates applied 11693/s (bulk of 1000: p50 303.6 p99 1048.5 max 1436 ms)
+  BM25+filters 16 clients: 235 QPS, p50 62.19 p99 172.57 max 944 ms, fewer than 10 in stock among top 100: 0
+  update visible in search after ack: p50 12 p99 66 max 127 ms (136 probes)
+  server CPU 98% of 3 cores | disk write 2.9 MB/s, read 0.0 MB/s | client core 40%
+  ES: merge time 12.2 s, indexing time 27.8 s, refreshes 46, segments now 11
+thread 'main' (1962) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+thread 'main' (1978) panicked at src/bin/es.rs:114:23:
+index out of bounds: the len is 0 but the index is 9223372036854775808
+ours: sent 224 catch-up batches; all at [1417, 1410, 1397, 1421]
+es: sent 0 catch-up batches; all at [1417, 1410, 1397, 1421]
+split: sent 2997 catch-up batches; all at [1417, 1410, 1397, 1421]
+after identical updates: BM25+filters top-10 ES == ours ids 380/600, ids+scores 230/600; filters by popularity 900/900
+split pipeline (BM25 top 100 then stock from vol) == ours: 380/600 (fewer than 10 in stock: 0)

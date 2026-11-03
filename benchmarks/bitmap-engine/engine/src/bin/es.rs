@@ -110,6 +110,9 @@ fn ids(r: &Value) -> Vec<u32> {
 }
 
 fn stats(mut v: Vec<f64>) -> (f64, f64, f64) {
+    if v.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p = |x: f64| v[((v.len() - 1) as f64 * x).round() as usize];
     (p(0.5), p(0.99), *v.last().unwrap())
@@ -1454,6 +1457,327 @@ fn realours(path: &str) {
     }
 }
 
+// ------------------------------------------------------------------ search under update load
+// Four writers own disjoint doc sets (d % 4 == t), so the final state depends only on how many
+// batches each writer sent, not on interleaving; the last 64 docs are reserved for the probe.
+const MW: u64 = 4;
+const PROBE_DOCS: u64 = 64;
+fn mbatch(rc: &realcat::RealCat, t: u64, b: u64) -> String {
+    let span = (rc.n as u64 - PROBE_DOCS) / MW;
+    let mut body = String::with_capacity(1000 * 64);
+    for i in 0..1000u64 {
+        let h = mix((11u64 << 40) + (t << 36) + b * 1000 + i);
+        let d = (h % span) * MW + t;
+        if (h >> 32) & 1 == 0 {
+            body.push_str(&format!("{{\"update\":{{\"_id\":\"{d}\"}}}}\n{{\"doc\":{{\"stock\":{}}}}}\n", (h >> 40) % 10 != 0));
+        } else {
+            let p = (rc.price[d as usize] as u64 * (80 + (h >> 40) % 41) / 100).max(1);
+            body.push_str(&format!("{{\"update\":{{\"_id\":\"{d}\"}}}}\n{{\"doc\":{{\"price\":{p}}}}}\n"));
+        }
+    }
+    body
+}
+#[derive(Clone, Copy, PartialEq)]
+enum MSys { Ours, Es, Split }
+impl MSys {
+    fn parse(s: &str) -> Self { match s { "ours" => MSys::Ours, "es" => MSys::Es, "split" => MSys::Split, _ => panic!("ours|es|split") } }
+    fn name(self) -> &'static str { match self { MSys::Ours => "ours", MSys::Es => "es", MSys::Split => "split" } }
+    fn base(self) -> &'static str { if self == MSys::Ours { "http://127.0.0.1:9400" } else { ES } }
+    /// index that receives the updates
+    fn widx(self) -> &'static str { if self == MSys::Split { "vol" } else { "real" } }
+}
+/// The reserved probe docs and the rarest word of each title.
+fn probe_docs(rc: &realcat::RealCat) -> Vec<(u64, String)> {
+    let n = rc.n as u64;
+    let docs: Vec<u64> = (n - PROBE_DOCS..n).collect();
+    let mut df: std::collections::HashMap<u32, u32> = docs.iter().flat_map(|&d| rc.tokens[d as usize].iter().map(|&w| (w, 0))).collect();
+    for t in &rc.tokens {
+        for w in t {
+            if let Some(c) = df.get_mut(w) { *c += 1; }
+        }
+    }
+    docs.iter().map(|&d| {
+        let w = *rc.tokens[d as usize].iter().min_by_key(|w| df[w]).expect("probe doc has a title");
+        (d, rc.vocab[w as usize].clone())
+    }).collect()
+}
+fn seq_load(sys: MSys) -> Vec<u64> {
+    std::fs::read_to_string(format!("mixed_{}.seq", sys.name())).ok()
+        .map(|s| s.split_whitespace().map(|x| x.parse().unwrap()).collect()).unwrap_or(vec![0; MW as usize])
+}
+fn seq_save(sys: MSys, v: &[u64]) {
+    std::fs::write(format!("mixed_{}.seq", sys.name()), v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ")).unwrap();
+}
+fn proc_io(key: &str) -> Option<f64> {
+    let pid = std::env::var("SPID").ok()?;
+    let s = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    s.lines().find(|l| l.starts_with(key))?.split_whitespace().nth(1)?.parse().ok()
+}
+fn mbodies(rc: &realcat::RealCat, sys: MSys) -> Vec<Value> {
+    let wls = workloads(rc);
+    wls[1].bm25.iter().map(|(ws, f)| {
+        if sys == MSys::Split {
+            // volatile fields live in `vol`: BM25 + static filters only, then filter the top 100 by stock
+            let f: Vec<Clause> = f.iter().filter(|c| !matches!(c, Clause::Stock)).cloned().collect();
+            let mut b = rq_bm25f(rc, ws, &f);
+            b["size"] = json!(100);
+            b["_source"] = json!(false);
+            b
+        } else {
+            with_source(rq_bm25f(rc, ws, f))
+        }
+    }).collect()
+}
+/// One search; for Split: search + mget of stock from `vol`, keep the first 10 in stock.
+/// Returns (id, score) of the top 10 and whether the split pipeline had fewer than 10 in stock.
+fn msearch(a: &ureq::Agent, sys: MSys, b: &Value) -> (Vec<(String, f64)>, bool) {
+    let r = post_to(a, sys.base(), "/real/_search", &b.to_string(), "application/json");
+    let hits: Vec<(String, f64)> = r["hits"]["hits"].as_array().unwrap().iter()
+        .map(|h| (h["_id"].as_str().unwrap().to_string(), h["_score"].as_f64().unwrap_or(0.0))).collect();
+    if sys != MSys::Split {
+        return (hits, false);
+    }
+    if hits.is_empty() {
+        return (hits, false);
+    }
+    let ids: Vec<&str> = hits.iter().map(|h| h.0.as_str()).collect();
+    let m = post_to(a, ES, "/vol/_mget?_source=stock", &json!({"ids": ids}).to_string(), "application/json");
+    let ok: Vec<bool> = m["docs"].as_array().unwrap().iter().map(|d| d["_source"]["stock"].as_bool().unwrap_or(false)).collect();
+    let top: Vec<(String, f64)> = hits.into_iter().zip(ok).filter(|x| x.1).map(|x| x.0).take(K).collect();
+    let short = top.len() < K && r["hits"]["hits"].as_array().unwrap().len() == 100;
+    (top, short)
+}
+fn es_stats(idx: &str) -> (f64, f64, f64, f64) {
+    let v: Value = agent().get(&format!("{ES}/{idx}/_stats/merge,refresh,segments,indexing")).call().unwrap().into_json().unwrap();
+    let p = &v["indices"][idx]["primaries"];
+    (p["merges"]["total_time_in_millis"].as_f64().unwrap_or(0.0) / 1e3, p["refresh"]["total"].as_f64().unwrap_or(0.0),
+     p["segments"]["count"].as_f64().unwrap_or(0.0), p["indexing"]["index_time_in_millis"].as_f64().unwrap_or(0.0) / 1e3)
+}
+
+fn mixed(sys_s: &str, path: &str, rate: u64, secs: u64, label: &str) {
+    let sys = MSys::parse(sys_s);
+    let rc = realcat::load(path);
+    let bodies = mbodies(&rc, sys);
+    let n = rc.n as u64;
+    let seq0 = seq_load(sys);
+    let sent: Vec<AtomicU64> = (0..MW).map(|_| AtomicU64::new(0)).collect();
+    for b in bodies.iter().take(200) {
+        msearch(&agent(), sys, b); // warm-up
+    }
+    let stop = AtomicBool::new(false);
+    let qdone = AtomicU64::new(0);
+    let short = AtomicU64::new(0);
+    let blat: parking_lot::Mutex<Vec<f64>> = Default::default();
+    let fresh: parking_lot::Mutex<Vec<f64>> = Default::default();
+    let probes = probe_docs(&rc);
+    {
+        let mut body = String::new();
+        for (d, _) in &probes {
+            body.push_str(&format!("{{\"update\":{{\"_id\":\"{d}\"}}}}\n{{\"doc\":{{\"stock\":true}}}}\n"));
+        }
+        post_to(&agent(), sys.base(), &format!("/{}/_bulk", sys.widx()), &body, "application/x-ndjson");
+        if sys != MSys::Ours {
+            post_to(&agent(), ES, &format!("/{}/_refresh", sys.widx()), "", "application/json");
+        }
+    }
+    let es0 = if sys != MSys::Ours { Some(es_stats(sys.widx())) } else { None };
+    let (c0, s0, w0, r0) = (cpu_secs(), spid_cpu(), proc_io("write_bytes"), proc_io("read_bytes"));
+    let t0 = Instant::now();
+    let lats = std::thread::scope(|s| {
+        if rate > 0 {
+            for t in 0..MW {
+                let (stop, sent, blat, rc, seq0) = (&stop, &sent, &blat, &rc, &seq0);
+                s.spawn(move || {
+                    let a = agent();
+                    while !stop.load(Relaxed) {
+                        let k = sent[t as usize].load(Relaxed);
+                        let due = (t0.elapsed().as_secs_f64() * rate as f64 / 1000.0 / MW as f64) as u64;
+                        if k >= due {
+                            std::thread::sleep(Duration::from_micros(500));
+                            continue;
+                        }
+                        let body = mbatch(rc, t, seq0[t as usize] + k);
+                        let t1 = Instant::now();
+                        let r = post_to(&a, sys.base(), &format!("/{}/_bulk", sys.widx()), &body, "application/x-ndjson");
+                        assert!(!r["errors"].as_bool().unwrap_or(false), "bulk errors");
+                        blat.lock().push(t1.elapsed().as_secs_f64() * 1e3);
+                        sent[t as usize].store(k + 1, Relaxed);
+                    }
+                });
+            }
+        }
+        // freshness probe: flip stock on a reserved doc, poll "rarest title word AND stock" until the
+        // doc disappears / reappears (split: poll the realtime mget of `vol`, which is what its queries read)
+        {
+            let (stop, fresh, probes) = (&stop, &fresh, &probes);
+            s.spawn(move || {
+                let a = agent();
+                let mut k = 0u64;
+                while !stop.load(Relaxed) {
+                    let (d, tok) = &probes[(k % PROBE_DOCS) as usize];
+                    let v = (k / PROBE_DOCS) % 2 == 1; // first round: true -> false, then back
+                    let body = format!("{{\"update\":{{\"_id\":\"{d}\"}}}}\n{{\"doc\":{{\"stock\":{v}}}}}\n");
+                    post_to(&a, sys.base(), &format!("/{}/_bulk", sys.widx()), &body, "application/x-ndjson");
+                    let t1 = Instant::now();
+                    let q = json!({"size": 1000, "_source": false, "query": {"bool": {"filter": [{"term": {"title_tok": tok}}, {"term": {"stock": true}}]}}}).to_string();
+                    loop {
+                        let seen = if sys == MSys::Split {
+                            let m = post_to(&a, ES, "/vol/_mget?_source=stock", &json!({"ids": [d.to_string()]}).to_string(), "application/json");
+                            m["docs"][0]["_source"]["stock"].as_bool() == Some(true)
+                        } else {
+                            let r = post_to(&a, sys.base(), "/real/_search", &q, "application/json");
+                            r["hits"]["hits"].as_array().unwrap().iter().any(|h| h["_id"].as_str() == Some(&d.to_string()))
+                        };
+                        if seen == v {
+                            fresh.lock().push(t1.elapsed().as_secs_f64() * 1e3);
+                            break;
+                        }
+                        if t1.elapsed().as_secs() > 30 || stop.load(Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    k += 1;
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            });
+        }
+        let qc: usize = std::env::var("QCLIENTS").ok().and_then(|x| x.parse().ok()).unwrap_or(16);
+        let hs: Vec<_> = (0..qc).map(|t| {
+            let (stop, qdone, short, bodies) = (&stop, &qdone, &short, &bodies);
+            s.spawn(move || {
+                let a = agent();
+                let mut l = Vec::new();
+                let mut j = t * 97;
+                while !stop.load(Relaxed) {
+                    let t1 = Instant::now();
+                    let (_, sh) = msearch(&a, sys, &bodies[j % bodies.len()]);
+                    l.push(t1.elapsed().as_secs_f64() * 1e3);
+                    if sh { short.fetch_add(1, Relaxed); }
+                    qdone.fetch_add(1, Relaxed);
+                    j += 1;
+                }
+                l
+            })
+        }).collect();
+        std::thread::sleep(Duration::from_secs(secs));
+        stop.store(true, Relaxed);
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect::<Vec<f64>>()
+    });
+    let wall = t0.elapsed().as_secs_f64();
+    let srv = spid_cpu().zip(s0).map(|(a, b)| 100.0 * (a - b) / wall / 3.0);
+    let wr = proc_io("write_bytes").zip(w0).map(|(a, b)| (a - b) / wall / 1048576.0);
+    let rd = proc_io("read_bytes").zip(r0).map(|(a, b)| (a - b) / wall / 1048576.0);
+    let nb: u64 = sent.iter().map(|x| x.load(Relaxed)).sum();
+    let seq1: Vec<u64> = (0..MW as usize).map(|t| seq0[t] + sent[t].load(Relaxed)).collect();
+    seq_save(sys, &seq1);
+    let (q50, q99, qmx) = stats(lats);
+    let (b50, b99, bmx) = stats(blat.lock().clone());
+    let fr = fresh.lock().clone();
+    let (f50, f99, fmx) = stats(fr.clone());
+    println!("[{label}] target {rate} updates/s, {secs} s");
+    println!("  updates applied {:.0}/s (bulk of 1000: p50 {b50:.1} p99 {b99:.1} max {bmx:.0} ms)", nb as f64 * 1000.0 / wall);
+    println!("  BM25+filters {} clients: {:.0} QPS, p50 {q50:.2} p99 {q99:.2} max {qmx:.0} ms{}", std::env::var("QCLIENTS").unwrap_or("16".into()), qdone.load(Relaxed) as f64 / wall,
+             if sys == MSys::Split { format!(", fewer than 10 in stock among top 100: {}", short.load(Relaxed)) } else { String::new() });
+    println!("  update visible in search after ack: p50 {f50:.0} p99 {f99:.0} max {fmx:.0} ms ({} probes)", fr.len());
+    println!("  server CPU {} of 3 cores | disk write {} MB/s, read {} MB/s | client core {:.0}%",
+             srv.map(|x| format!("{x:.0}%")).unwrap_or("?".into()), wr.map(|x| format!("{x:.1}")).unwrap_or("?".into()),
+             rd.map(|x| format!("{x:.1}")).unwrap_or("?".into()), 100.0 * (cpu_secs() - c0) / wall);
+    if let Some((m0, r0, _, i0)) = es0 {
+        let (m1, r1, sg, i1) = es_stats(sys.widx());
+        println!("  ES: merge time {:.1} s, indexing time {:.1} s, refreshes {:.0}, segments now {sg:.0}", m1 - m0, i1 - i0, r1 - r0);
+    }
+}
+
+/// Bring every system to the same batch counts, reset the probe docs, then compare results.
+fn mixedcheck(path: &str) {
+    let rc = realcat::load(path);
+    let systems: Vec<MSys> = [MSys::Ours, MSys::Es, MSys::Split].into_iter()
+        .filter(|s| std::path::Path::new(&format!("mixed_{}.seq", s.name())).exists()).collect();
+    let target: Vec<u64> = (0..MW as usize).map(|t| systems.iter().map(|s| seq_load(*s)[t]).max().unwrap()).collect();
+    let a = agent();
+    for &sys in &systems {
+        let cur = seq_load(sys);
+        let mut extra = 0;
+        for t in 0..MW as usize {
+            for b in cur[t]..target[t] {
+                post_to(&a, sys.base(), &format!("/{}/_bulk", sys.widx()), &mbatch(&rc, t as u64, b), "application/x-ndjson");
+                extra += 1;
+            }
+        }
+        let mut body = String::new();
+        for d in rc.n as u64 - PROBE_DOCS..rc.n as u64 {
+            body.push_str(&format!("{{\"update\":{{\"_id\":\"{d}\"}}}}\n{{\"doc\":{{\"price\":{},\"stock\":{}}}}}\n", rc.price[d as usize], unif(d, 6) < 0.9));
+        }
+        post_to(&a, sys.base(), &format!("/{}/_bulk", sys.widx()), &body, "application/x-ndjson");
+        seq_save(sys, &target);
+        println!("{}: sent {extra} catch-up batches; all at {:?}", sys.name(), target);
+    }
+    post_to(&a, ES, "/_refresh", "", "application/json");
+    let ours = mbodies(&rc, MSys::Ours);
+    let split = mbodies(&rc, MSys::Split);
+    let (mut same_ids, mut same_scores, mut split_same, mut split_short) = (0, 0, 0, 0);
+    let (mut tie_eq, mut score_only) = (0, 0);
+    let close = |x: f64, y: f64| (x - y).abs() < 1e-4 * y.abs().max(1.0);
+    for (i, b) in ours.iter().enumerate() {
+        let (o, _) = msearch(&a, MSys::Ours, b);
+        let (e, _) = msearch(&a, MSys::Es, b);
+        let ids = |v: &[(String, f64)]| v.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
+        if ids(&o) == ids(&e) { same_ids += 1; }
+        if o.len() == e.len() && o.iter().zip(&e).all(|(x, y)| x.0 == y.0 && close(x.1, y.1)) { same_scores += 1; }
+        // tie-aware: same score sequence, and the same docs strictly above the 10th score
+        if o.len() == e.len() && o.iter().zip(&e).all(|(x, y)| close(x.1, y.1)) {
+            score_only += 1;
+            let last = o.last().map(|x| x.1).unwrap_or(0.0);
+            let above = |v: &[(String, f64)]| { let mut s: Vec<String> = v.iter().filter(|x| x.1 > last && !close(x.1, last)).map(|x| x.0.clone()).collect(); s.sort(); s };
+            if above(&o) == above(&e) { tie_eq += 1; }
+        }
+        if systems.contains(&MSys::Split) {
+            let (sp, sh) = msearch(&a, MSys::Split, &split[i]);
+            if ids(&o) == ids(&sp) { split_same += 1; }
+            if sh { split_short += 1; }
+        }
+    }
+    // popularity-sorted filters (stock filter included) after the same updates
+    let wls = workloads(&rc);
+    let mut pop_same = 0;
+    for q in &wls[1].filters {
+        let b = rq_pop(&rc, q);
+        let (o, _) = msearch(&a, MSys::Ours, &b);
+        let (e, _) = msearch(&a, MSys::Es, &b);
+        if o.iter().map(|x| &x.0).eq(e.iter().map(|x| &x.0)) { pop_same += 1; }
+    }
+    println!("after identical updates: BM25+filters top-10 ES == ours ids {same_ids}/{n}, ids+scores {same_scores}/{n}; same score sequence {score_only}/{n}, of which same docs above the 10th score {tie_eq}; filters by popularity {pop_same}/{m}",
+             n = ours.len(), m = wls[1].filters.len());
+    if systems.contains(&MSys::Split) {
+        println!("split pipeline (BM25 top 100 then stock from vol) == ours: {split_same}/{} (fewer than 10 in stock: {split_short})", ours.len());
+    }
+}
+
+/// `vol` index: only the volatile fields (stock, price), for the split-index configuration.
+fn volload(path: &str) {
+    let rc = realcat::load(path);
+    let a = agent();
+    let _ = a.delete(&format!("{ES}/vol")).call();
+    a.put(&format!("{ES}/vol")).set("Content-Type", "application/json").send_string(&json!({
+        "settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "-1"},
+        "mappings": {"properties": {"price": {"type": "integer"}, "stock": {"type": "boolean"}}}}).to_string()).unwrap();
+    let t = Instant::now();
+    let n = rc.n as u64;
+    for lo in (0..n).step_by(10000) {
+        let mut body = String::new();
+        for d in lo..(lo + 10000).min(n) {
+            body.push_str(&format!("{{\"index\":{{\"_id\":\"{d}\"}}}}\n{{\"price\":{},\"stock\":{}}}\n", rc.price[d as usize], unif(d, 6) < 0.9));
+        }
+        let r = post(&a, "/vol/_bulk", &body, "application/x-ndjson");
+        assert!(!r["errors"].as_bool().unwrap());
+    }
+    post(&a, "/vol/_refresh", "", "application/json");
+    post(&a, "/vol/_forcemerge?max_num_segments=1", "", "application/json");
+    a.put(&format!("{ES}/vol/_settings")).set("Content-Type", "application/json").send_string(&json!({"index": {"refresh_interval": "1s"}}).to_string()).unwrap();
+    println!("vol: {n} docs in {:.1}s", t.elapsed().as_secs_f64());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = args.get(2).cloned().unwrap_or_default();
@@ -1478,6 +1802,9 @@ fn main() {
         Some("vespabench") => vespabench(&arg),
         Some("vespalat") => vespalat_during(&arg, args[3].parse().unwrap()),
         Some("prodbench") => prodbench(&arg, &args[3]),
+        Some("mixed") => mixed(&arg, &args[3], args[4].parse().unwrap(), args[5].parse().unwrap(), &args[6]),
+        Some("mixedcheck") => mixedcheck(&arg),
+        Some("volload") => volload(&arg),
         _ => panic!("usage: es load|bench|ours N | realload|realbench|realours FILE"),
     }
 }
